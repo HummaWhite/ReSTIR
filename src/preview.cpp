@@ -224,19 +224,54 @@ void RenderImGui() {
 	}
 
 	ImGui::Begin("Options"); {
-		const char* Tracers[] = { "Streamed", "Single Kernel", "BVH Visualize", "GBuffer Preview" };
-		if (ImGui::Combo("Tracer", &Settings::tracer, Tracers, IM_ARRAYSIZE(Tracers))) {
+		const char* Denoisers[] = { "None", "EA A-Trous", "SVGF" };
+		if (ImGui::Combo("Denoiser", &Settings::denoiser, Denoisers, IM_ARRAYSIZE(Denoisers))) {
 			State::camChanged = true;
 		}
 
-		if (Settings::tracer == Tracer::Streamed) {
-			ImGui::Checkbox("Sort Material", &Settings::sortMaterial);
+		ImGui::Checkbox("Animate Camera", &Settings::animateCamera);
+		if (Settings::animateCamera) {
+			State::camChanged = true;
+			ImGui::SliderFloat("Radius", &Settings::animateRadius, 0.f, 10.f);
+			ImGui::SliderFloat("Speed", &Settings::animateSpeed, 0.1f, 10.f);
 		}
-		else if (Settings::tracer == Tracer::GBufferPreview) {
-			const char* Modes[] = { "Position", "Normal", "Texcoord" };
-			if (ImGui::Combo("Mode", &Settings::GBufferPreviewOpt, Modes, IM_ARRAYSIZE(Modes))) {
-				State::camChanged = true;
-			}
+		
+		ImGui::Checkbox("Modulate", &Settings::modulate);
+
+		if (Settings::denoiser == Denoiser::EAWavelet) {
+			const char* Modes[] = {
+				"Albedo", "Normal", "Depth/Position", "Motion",
+				"Input Direct", "Input Indirect",
+				"Output Direct", "Output Indirect",
+				"Composed"
+			};
+			ImGui::Combo("Preview", &Settings::ImagePreviewOpt, Modes, IM_ARRAYSIZE(Modes));
+
+			ImGui::SliderInt("Levels", &EAWFilter.level, 1, 5);
+			ImGui::DragFloat("Sigma Lumin", &EAWFilter.waveletFilter.sigLumin, .01f, 0.f);
+			ImGui::DragFloat("Sigma Normal", &EAWFilter.waveletFilter.sigNormal, .01f, 0.f);
+			ImGui::DragFloat("Sigma Depth", &EAWFilter.waveletFilter.sigDepth, .01f, 0.f);
+		}
+		else if (Settings::denoiser == Denoiser::SVGF) {
+			const char* Modes[] = {
+				"Albedo", "Normal", "Depth/Position", "Motion",
+				"Input Direct", "Input Indirect",
+				"Output Direct", "Output Indirect",
+				"Composed",
+				"Direct Moment", "Indirect Moment",
+				"Direct Variance", "Indirect Variance"
+			};
+			ImGui::Combo("Preview", &Settings::ImagePreviewOpt, Modes, IM_ARRAYSIZE(Modes));
+
+			ImGui::SliderInt("Levels", &directFilter.level, 1, 5);
+			ImGui::DragFloat("Sigma Lumin", &directFilter.waveletFilter.sigLumin, .01f, 0.f);
+			ImGui::DragFloat("Sigma Normal", &directFilter.waveletFilter.sigNormal, .01f, 0.f);
+			ImGui::DragFloat("Sigma Depth", &directFilter.waveletFilter.sigDepth, .01f, 0.f);
+
+			indirectFilter.level = directFilter.level;
+			indirectFilter.waveletFilter.sigLumin = directFilter.waveletFilter.sigLumin;
+			indirectFilter.waveletFilter.sigNormal = directFilter.waveletFilter.sigNormal;
+			indirectFilter.waveletFilter.sigDepth = directFilter.waveletFilter.sigDepth;
 		}
 
 		if (ImGui::InputInt("Max Depth", &Settings::traceDepth, 1, 1)) {
@@ -247,6 +282,7 @@ void RenderImGui() {
 		ImGui::Text("Post Processing");
 		const char* ToneMappingMethods[] = { "None", "Filmic", "ACES" };
 		ImGui::Combo("Tone Mapping", &Settings::toneMapping, ToneMappingMethods, IM_ARRAYSIZE(ToneMappingMethods));
+		ImGui::Separator();
 
 		ImGui::End();
 	}
@@ -293,7 +329,7 @@ void mainLoop() {
 
 		runCuda();
 
-		string title = "CIS565 Path Tracer | " + utilityCore::convertIntToString(iteration) + " Iterations";
+		std::string title = "CIS565 Path Tracer | " + utilityCore::convertIntToString(iteration) + " Iterations";
 		glfwSetWindowTitle(window, title.c_str());
 		glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
 		glBindTexture(GL_TEXTURE_2D, displayImage);

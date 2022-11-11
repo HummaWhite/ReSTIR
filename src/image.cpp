@@ -57,6 +57,24 @@ void Image::savePNG(const std::string &baseFilename) {
     delete[] bytes;
 }
 
+void Image::saveJPG(const std::string& baseFilename) {
+    uint8_t* bytes = new uint8_t[3 * mWidth * mHeight];
+    for (int y = 0; y < mHeight; y++) {
+        for (int x = 0; x < mWidth; x++) {
+            int i = y * mWidth + x;
+            glm::vec3 pix = glm::clamp(mPixels[i], glm::vec3(), glm::vec3(1)) * 255.f;
+            bytes[3 * i + 0] = pix.x;
+            bytes[3 * i + 1] = pix.y;
+            bytes[3 * i + 2] = pix.z;
+        }
+    }
+    std::string filename = baseFilename + ".jpg";
+    stbi_write_jpg(filename.c_str(), mWidth, mHeight, 3, bytes, 90);
+    std::cout << "Saved " << filename << "." << std::endl;
+
+    delete[] bytes;
+}
+
 void Image::saveHDR(const std::string &baseFilename) {
     std::string filename = baseFilename + ".hdr";
     stbi_write_hdr(filename.c_str(), mWidth, mHeight, 3, (const float *) mPixels);

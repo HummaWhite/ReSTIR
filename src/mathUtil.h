@@ -20,6 +20,10 @@ static std::string vec3ToString(const glm::vec3& vec) {
     return ss.str();
 }
 
+__host__ __device__ inline int ceilDiv(int x, int y) {
+    return (x + y - 1) / y;
+}
+
 namespace Math {
     bool epsilonCheck(float a, float b);
     glm::mat4 buildTransformationMatrix(glm::vec3 translation, glm::vec3 rotation, glm::vec3 scale);
@@ -27,6 +31,30 @@ namespace Math {
     template<typename T>
     bool between(const T& x, const T& min, const T& max) {
         return x >= min && x <= max;
+    }
+
+    __host__ __device__ inline glm::vec3 HDRToLDR(glm::vec3 c) {
+        return c / (c + 1.f) * 1.f;
+    }
+
+    __host__ __device__ inline glm::vec3 LDRToHDR(glm::vec3 c) {
+        c /= 1.f;
+        return c / (1.f - c + 1e-4f);
+    }
+
+    __host__ __device__ inline glm::vec2 encodeNormalHemiOct32(glm::vec3 n) {
+        glm::vec2 p = glm::vec2(n) * (1.f / (glm::abs(n.x) + glm::abs(n.y) + n.z));
+        return glm::vec2(p.x + p.y, p.x - p.y);
+    }
+
+    __host__ __device__ inline glm::vec3 decodeNormalHemiOct32(glm::vec2 n) {
+        glm::vec2 temp = glm::vec2(n.x + n.y, n.x - n.y) * .5f;
+        glm::vec3 v(temp, 1.f - glm::abs(temp.x) - glm::abs(temp.y));
+        return glm::normalize(v);
+    }
+
+    __host__ __device__ inline bool hasNanOrInf(glm::vec3 v) {
+        return isnan(v.x) || isnan(v.y) || isnan(v.z) || isinf(v.x) || isinf(v.y) || isinf(v.z);
     }
 
     __host__ __device__ inline float satDot(glm::vec3 a, glm::vec3 b) {

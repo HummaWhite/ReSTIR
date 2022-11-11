@@ -156,24 +156,6 @@ void Scene::createLightSampler() {
         lightSampler.sumAll << "]\n" << std::endl;
 }
 
-void Scene::createApertureSampler() {
-    if (apertureMaskTexId == NullTextureId) {
-        return;
-    }
-    auto apertureMask = textures[apertureMaskTexId];
-    std::vector<float> pdf(apertureMask->width() * apertureMask->height());
-
-    for (int i = 0; i < apertureMask->width(); i++) {
-        for (int j = 0; j < apertureMask->height(); j++) {
-            int idx = i * apertureMask->width() + j;
-            pdf[idx] = Math::luminance(apertureMask->data()[idx]);
-        }
-    }
-    apertureSampler = DiscreteSampler1D<float>(pdf);
-    std::cout << "[Aperture sampler width = " << apertureMask->width() << ", height = " << 
-        apertureMask->height() << "]\n" << std::endl;
-}
-
 void Scene::buildDevData() {
     int primId = 0;
     for (const auto& inst : modelInstances) {
@@ -213,12 +195,11 @@ void Scene::buildDevData() {
     }
 
     createLightSampler();
-    createApertureSampler();
 
     BVHSize = BVHBuilder::build(meshData.vertices, boundingBoxes, BVHNodes);
 
     hstScene.create(*this);
-    cudaMalloc(&devScene, sizeof(DevScene));
+    devScene = cudaMalloc<DevScene>(1);
     cudaMemcpyHostToDev(devScene, &hstScene, sizeof(DevScene));
     checkCUDAError("Dev Scene");
 
@@ -231,7 +212,6 @@ void Scene::buildDevData() {
 
     lightSampler.clear();
     envMapSampler.clear();
-    apertureSampler.clear();
 }
 
 void Scene::clear() {
@@ -332,8 +312,7 @@ void Scene::loadCamera() {
         }
         else if (tokens[0] == "ApertureMask") {
             if (tokens[1] != "Null") {
-                std::cout << "\t\t[Aperture mask use texture " << tokens[1] << "]" << std::endl;
-                apertureMaskTexId = addTexture(tokens[1]);
+                std::cout << "\t\t[Aperture skipped]" << std::endl;
             }
         }
         else if (tokens[0] == "Sample") {
@@ -472,7 +451,7 @@ void DevScene::create(const Scene& scene) {
         textureObjs.push_back({ tex, textureData + textureOffset });
         textureOffset += tex->byteSize() / sizeof(glm::vec3);
     }
-    cudaMalloc(&textures, textureObjs.size() * sizeof(DevTextureObj));
+    textures = cudaMalloc<DevTextureObj>(textureObjs.size());
     checkCUDAError("DevScene::textureObjs::malloc");
     cudaMemcpyHostToDev(textures, textureObjs.data(), textureObjs.size() * sizeof(DevTextureObj));
     checkCUDAError("DevScene::textureObjs::copy");
@@ -518,11 +497,6 @@ void DevScene::create(const Scene& scene) {
         envMapSampler.create(scene.envMapSampler);
     }
 
-    if (scene.apertureMaskTexId != NullTextureId) {
-        apertureMask = textures + scene.apertureMaskTexId;
-        apertureSampler.create(scene.apertureSampler);
-    }
-
 #if SAMPLER_USE_SOBOL
     std::ifstream sobolFile("sobol_10k_200.bin", std::ios::in | std::ios::binary);
     std::vector<char> sobolData(SobolSampleNum * SobolSampleDim * sizeof(uint32_t));
@@ -553,7 +527,6 @@ void DevScene::destroy() {
     cudaSafeFree(lightUnitRadiance);
     lightSampler.destroy();
     envMapSampler.destroy();
-    apertureSampler.destroy();
 
     cudaSafeFree(sampleSequence);
 }

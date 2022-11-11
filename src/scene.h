@@ -114,6 +114,13 @@ struct DevScene {
         }
     }
 
+    __device__ float getPrimitiveArea(int primId) {
+        glm::vec3 v0 = vertices[primId * 3 + 0];
+        glm::vec3 v1 = vertices[primId * 3 + 1];
+        glm::vec3 v2 = vertices[primId * 3 + 2];
+        return glm::length(glm::cross(v1 - v0, v2 - v0)) * .5f;
+    }
+
     __device__ glm::vec3 getPrimitivePlainNormal(int primId) {
         glm::vec3 v0 = vertices[primId * 3 + 0];
         glm::vec3 v1 = vertices[primId * 3 + 1];
@@ -348,7 +355,7 @@ struct DevScene {
     __device__ float environmentMapPdf(glm::vec3 w) {
         glm::vec3 radiance = envMap->linearSample(Math::toPlane(w));
         return Math::luminance(radiance) * sumLightPowerInv *
-            envMap->width * envMap->height * .5f;
+            envMap->width * envMap->height * .5f;// *glm::sqrt(glm::max(1.f - w.z * w.z, FLT_EPSILON));
     }
 
     __device__ float sampleEnvironmentMap(glm::vec3 pos, glm::vec2 r, glm::vec3& radiance, glm::vec3& wi) {
@@ -432,9 +439,6 @@ struct DevScene {
     DevTextureObj* envMap = nullptr;
     DevDiscreteSampler1D<float> envMapSampler;
 
-    DevTextureObj* apertureMask = nullptr;
-    DevDiscreteSampler1D<float> apertureSampler;
-
     uint32_t* sampleSequence = nullptr;
 };
 
@@ -450,7 +454,6 @@ public:
 
 private:
     void createLightSampler();
-    void createApertureSampler();
 
     void loadModel(const std::string& objectId);
     void loadMaterial(const std::string& materialId);
@@ -479,9 +482,6 @@ public:
     int numLightPrims = 0;
     DiscreteSampler1D<float> envMapSampler;
     int envMapTexId = NullTextureId;
-
-    DiscreteSampler1D<float> apertureSampler;
-    int apertureMaskTexId = NullTextureId;
 
     DevScene hstScene;
     DevScene* devScene = nullptr;

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.1)
 
-project(cis565_path_tracer)
+project(CUDA_ReSTIR)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
@@ -89,6 +89,7 @@ set(headers
     src/ImGui/imstb_textedit.h 
     src/ImGui/imstb_truetype.h 
     src/common.h
+	src/denoiser.h
     )
 
 set(sources
@@ -113,6 +114,7 @@ set(sources
     src/tiny_obj_loader.cpp
     src/common.cpp
     src/tiny_gltf.cpp
+	src/denoiser.cu
     )
 
 list(SORT headers)
@@ -122,7 +124,6 @@ source_group(Headers FILES ${headers})
 source_group(Sources FILES ${sources})
 
 #add_subdirectory(src/ImGui)
-#add_subdirectory(stream_compaction)  # TODO: uncomment if using your stream compaction
 
 cuda_add_executable(${CMAKE_PROJECT_NAME} ${sources} ${headers})
 target_link_libraries(${CMAKE_PROJECT_NAME}

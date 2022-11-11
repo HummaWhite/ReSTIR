@@ -1,153 +1,63 @@
 #include "main.h"
 #include "preview.h"
-#include "intersections.h"
 #include <cstring>
 #include <random>
 
-static std::string startTimeString;
+#include "image.h"
+#include "utilities.h"
+#include "pathtrace.h"
 
-// For camera controls
+int width;
+int height;
+
 static bool leftMousePressed = false;
 static bool rightMousePressed = false;
 static bool middleMousePressed = false;
 static double lastX;
 static double lastY;
 
-static float dtheta = 0, dphi = 0;
-static glm::vec3 cammove;
-
-float zoom, theta, phi;
-glm::vec3 cameraPosition;
-glm::vec3 ogLookAt; // for recentering the camera
-
 Scene* scene;
 GuiDataContainer* guiData;
 RenderState* renderState;
 int iteration;
 
-int width;
-int height;
+glm::vec3* devDirectIllum = nullptr;
+glm::vec3* devIndirectIllum = nullptr;
+GBuffer gBuffer;
 
-//-------------------------------
-//-------------MAIN--------------
-//-------------------------------
+glm::vec3* devTemp = nullptr;
+glm::vec3* devTempDirect = nullptr;
+glm::vec3* devTempIndirect = nullptr;
+glm::vec3* devImage = nullptr;
 
-void testAABB() {
-	AABB boxes[] = {
-		{ glm::vec3(-1.f), glm::vec3(1.f) },
-		{ glm::vec3(0.f), glm::vec3(1.f) },
-		{ glm::vec3(0.f), glm::vec3(1.f) },
-		{ glm::vec3(0.f), glm::vec3(1.f) },
-		{ glm::vec3(0.f), glm::vec3(1.f) },
-	};
+LeveledEAWFilter EAWFilter;
+SpatioTemporalFilter directFilter;
+SpatioTemporalFilter indirectFilter;
 
-	Ray ray[] = {
-		{ glm::vec3(-0.1f), glm::normalize(glm::vec3(1.f, 0.f, 0.f)) },
-		{ glm::vec3(0.f, 0.1f, 0.5f), glm::normalize(glm::vec3(1.f, 1.f, 0.f)) },
-		{ glm::vec3(-1.f), glm::normalize(glm::vec3(1.f, 0.f, 0.f)) },
-		{ glm::vec3(1.1f), glm::normalize(glm::vec3(1.f, 1.f, 0.f)) },
-		{ glm::vec3(2.f), glm::normalize(glm::vec3(-1.f)) },
-	};
-
-	for (int i = 0; i < sizeof(boxes) / sizeof(AABB); i++) {
-		float dist;
-		bool intersec = boxes[i].intersect(ray[i], dist);
-		std::cout << intersec << " " << dist << "\n";
-	}
+void initImageBuffer() {
+	devDirectIllum = cudaMalloc<glm::vec3>(width * height);
+	devIndirectIllum = cudaMalloc<glm::vec3>(width * height);
+	gBuffer.create(width, height);
+	devTemp = cudaMalloc<glm::vec3>(width * height);
+	devTempDirect = cudaMalloc<glm::vec3>(width * height);
+	devTempIndirect = cudaMalloc<glm::vec3>(width * height);
 }
 
-/**
-* GLM intersection returns false when triangle is back-faced
-*/
-void testTriangle() {
-	glm::vec3 v[] = { glm::vec3(-1.f, -1.f, 0.f), glm::vec3(1.f, -1.f, 0.f), glm::vec3(1.f, 1.f, 0.f) };
-	glm::vec3 ori(0.f, 0.f, 1.f);
-	glm::vec3 dir(0.f, 0.f, -1.f);
-	glm::vec2 bary;
-	float dist;
-	bool hit = intersectTriangle({ ori, dir }, v[0], v[1], v[2], bary, dist);
-	std::cout << hit << " " << vec3ToString(glm::vec3(1.f - bary.x - bary.y, bary)) << "\n";
-	glm::vec3 hitPos = v[0] * (1.f - bary.x - bary.y) + v[1] * bary.x + v[2] * bary.y;
-	std::cout << vec3ToString(hitPos) << "\n";
-	hit = intersectTriangle({ -ori, -dir }, v[0], v[1], v[2], bary, dist);
-	std::cout << hit << " " << vec3ToString(glm::vec3(1.f - bary.x - bary.y, bary)) << "\n";
-}
-
-void testDiscreteSampler1D() {
-	std::vector<float> distrib = { .1f, .2f, .3f, .4f, 2.f, 3.f, 4.f };
-	DiscreteSampler1D<float> sampler(distrib);
-	int stat[7] = { 0 };
-
-	std::default_random_engine rng(time(nullptr));
-
-	for (int i = 0; i < 1000000; i++) {
-		float r1 = std::uniform_real_distribution<float>(0.f, 1.f)(rng);
-		float r2 = std::uniform_real_distribution<float>(0.f, 1.f)(rng);
-		stat[sampler.sample(r1, r2)]++;
-	}
-
-	for (auto i : stat) {
-		std::cout << i << " ";
-	}
-	std::cout << "\n";
-}
-
-void testDiscreteSampler2D() {
-	std::vector<float> distrib = {
-		.1f, .2f,  .3f,  .4f, 2.f,  3.f,  4.f,
-		.2f, .4f,  .6f,  .8f, 4.f,  6.f,  8.f,
-		.3f, .6f,  .9f, 1.2f, 6.f,  9.f, 12.f,
-		.4f, .8f, 1.2f, 1.6f, 8.f, 12.f, 16.f
-	};
-
-	DiscreteSampler2D<float> sampler(distrib.data(), 7, 4);
-
-	int stat[4][7] = { 0 };
-	int statRow[4] = { 0 };
-	int statCol[7] = { 0 };
-	std::default_random_engine rng(time(nullptr));
-
-	for (int i = 0; i < 1000000; i++) {
-		float r1 = std::uniform_real_distribution<float>(0.f, 1.f)(rng);
-		float r2 = std::uniform_real_distribution<float>(0.f, 1.f)(rng);
-		float r3 = std::uniform_real_distribution<float>(0.f, 1.f)(rng);
-		float r4 = std::uniform_real_distribution<float>(0.f, 1.f)(rng);
-
-		auto pos = sampler.sample(r1, r2, r3, r4);
-		stat[pos.first][pos.second]++;
-		statRow[pos.first]++;
-		statCol[pos.second]++;
-	}
-
-	for (int i = 0; i < 4; i++) {
-		for (int j = 0; j < 7; j++) {
-			std::cout << std::setw(4) << stat[i][j] << " ";
-		}
-		std::cout << "\n";
-	}
-	std::cout << "\n";
-	for (int i = 0; i < 7; i++) {
-		std::cout << std::setw(4) << statCol[i] << " ";
-	}
-	std::cout << "\n";
-	for (int i = 0; i < 4; i++) {
-		std::cout << std::setw(4) << statRow[i] << " ";
-	}
-	std::cout << "\n";
+void freeImageBuffer() {
+	cudaSafeFree(devDirectIllum);
+	cudaSafeFree(devIndirectIllum);
+	gBuffer.destroy();
+	cudaSafeFree(devTemp);
+	cudaSafeFree(devTempDirect);
+	cudaSafeFree(devTempIndirect);
 }
 
 int main(int argc, char** argv) {
-	startTimeString = currentTimeString();
-
 	if (argc < 2) {
 		printf("Usage: %s SCENEFILE.txt\n", argv[0]);
 		return 1;
 	}
-
-	const char* sceneFile = argv[1];
-
-	// Load scene file
-	scene = new Scene(sceneFile);
+	scene = new Scene(argv[1]);
 
 	//Create Instance for ImGUIData
 	guiData = new GuiDataContainer();
@@ -166,17 +76,30 @@ int main(int argc, char** argv) {
 	InitImguiData(guiData);
 	InitDataContainer(guiData);
 
+	EAWFilter.create(width, height, 5);
+	directFilter.create(width, height, 5);
+	indirectFilter.create(width, height, 5);
+
 	scene->buildDevData();
+	initImageBuffer();
+	pathTraceInit(scene);
+
 	// GLFW main loop
 	mainLoop();
 
 	scene->clear();
 	Resource::clear();
+	freeImageBuffer();
+	pathTraceFree();
+	directFilter.destroy();
+	indirectFilter.destroy();
 
 	return 0;
 }
 
-void saveImage() {
+void saveImage(bool jpg) {
+	cudaMemcpyDevToHost(scene->state.image.data(), devImage, width * height * sizeof(glm::vec3));
+
 	float samples = iteration;
 	// output image file
 	Image img(width, height);
@@ -184,7 +107,7 @@ void saveImage() {
 	for (int x = 0; x < width; x++) {
 		for (int y = 0; y < height; y++) {
 			int index = x + (y * width);
-			glm::vec3 color = renderState->image[index] / samples;
+			glm::vec3 color = renderState->image[index];
 			switch (Settings::toneMapping) {
 			case ToneMapping::Filmic:
 				color = Math::filmic(color);
@@ -202,47 +125,131 @@ void saveImage() {
 
 	std::string filename = renderState->imageName;
 	std::ostringstream ss;
-	ss << filename << "." << startTimeString << "." << samples << "samp";
+	ss << filename << "." << currentTimeString() << "." << samples << "samp";
 	filename = ss.str();
 
 	// CHECKITOUT
-	img.savePNG(filename);
+	if (jpg) {
+		img.saveJPG(filename);
+	}
+	else {
+		img.savePNG(filename);
+	}
 	//img.saveHDR(filename);  // Save a Radiance HDR file
 }
 
 void runCuda() {
+	glm::vec3 camOrigPos = scene->camera.position;
+
+	if (Settings::animateCamera) {
+		float t = glfwGetTime() * Settings::animateSpeed;
+		scene->camera.position = camOrigPos +
+			glm::vec3(glm::cos(t), 0.f, glm::sin(t)) * Settings::animateRadius;
+	}
+
 	if (State::camChanged) {
 		iteration = 0;
 		scene->camera.update();
 		State::camChanged = false;
 	}
 
-	// Map OpenGL buffer object for writing from CUDA on a single GPU
-	// No data is moved (Win & Linux). When mapped to CUDA, OpenGL should not use this buffer
+	gBuffer.render(scene->devScene, scene->camera);
 
-	if (iteration == 0) {
-		pathTraceFree();
-		pathTraceInit(scene);
+	pathTrace(devDirectIllum, devIndirectIllum, iteration);
+
+	if (Settings::denoiser == Denoiser::None) {
+		cudaMemcpyDevToDev(devTempDirect, devDirectIllum, width * height * sizeof(glm::vec3));
+		cudaMemcpyDevToDev(devTempIndirect, devIndirectIllum, width * height * sizeof(glm::vec3));
 	}
-
-	if (iteration < renderState->iterations) {
-		uchar4* pbo_dptr = NULL;
-		iteration++;
-		cudaGLMapBufferObject((void**)&pbo_dptr, pbo);
-
-		// execute the kernel
-		int frame = 0;
-		pathTrace(pbo_dptr, frame, iteration);
-
-		// unmap buffer object
-		cudaGLUnmapBufferObject(pbo);
+	else if (Settings::denoiser == Denoiser::EAWavelet) {
+		EAWFilter.filter(devTempDirect, devDirectIllum, gBuffer, scene->camera);
+		EAWFilter.filter(devTempIndirect, devIndirectIllum, gBuffer, scene->camera);
 	}
 	else {
-		saveImage();
-		pathTraceFree();
-		cudaDeviceReset();
-		exit(EXIT_SUCCESS);
+		directFilter.filter(devTempDirect, devDirectIllum, gBuffer, scene->camera);
+		indirectFilter.filter(devTempIndirect, devIndirectIllum, gBuffer, scene->camera);
 	}
+
+	if (Settings::modulate) {
+		modulateAlbedo(devTempDirect, gBuffer);
+		modulateAlbedo(devTempIndirect, gBuffer);
+
+		if (Settings::ImagePreviewOpt == 4) {
+			modulateAlbedo(devDirectIllum, gBuffer);
+		}
+		else if (Settings::ImagePreviewOpt == 5) {
+			modulateAlbedo(devIndirectIllum, gBuffer);
+		}
+		//modulateAlbedo(devTemp, gBuffer);
+	}
+	addImage(devTemp, devTempDirect, devTempIndirect, width, height);
+
+	uchar4* devPBO = nullptr;
+	cudaGLMapBufferObject((void**)&devPBO, pbo);
+
+	if (Settings::ImagePreviewOpt == 2) {
+#if DENOISER_ENCODE_POSITION
+		copyImageToPBO(devPBO, gBuffer.depth(), width, height);
+#else
+		copyImageToPBO(devPBO, gBuffer.position(), width, height, Settings::toneMapping);
+#endif
+	}
+#if DENOISER_ENCODE_NORMAL
+	else if (Settings::ImagePreviewOpt == 1) {
+		copyImageToPBO(devPBO, gBuffer.normal(), width, height);
+	}
+#endif
+	else if (Settings::ImagePreviewOpt == 3) {
+		copyImageToPBO(devPBO, gBuffer.devMotion, width, height);
+	}
+	else if (Settings::ImagePreviewOpt == 11) {
+		copyImageToPBO(devPBO, directFilter.devVariance, width, height);
+	}
+	else if (Settings::ImagePreviewOpt == 12) {
+		copyImageToPBO(devPBO, indirectFilter.devVariance, width, height);
+	}
+	else {
+		switch (Settings::ImagePreviewOpt) {
+		case 0:
+			devImage = gBuffer.devAlbedo;
+			break;
+#if !DENOISER_ENCODE_NORMAL
+		case 1:
+			devImage = gBuffer.normal();
+			break;
+#endif
+		case 4:
+			devImage = devDirectIllum;
+			break;
+		case 5:
+			devImage = devIndirectIllum;
+			break;
+		case 6:
+			devImage = devTempDirect;
+			break;
+		case 7:
+			devImage = devTempIndirect;
+			break;
+		case 8:
+			devImage = devTemp;
+			break;
+		case 9:
+			devImage = directFilter.devAccumMoment[directFilter.frameIdx];
+			break;
+		case 10:
+			devImage = indirectFilter.devAccumMoment[directFilter.frameIdx];
+			break;
+		}
+		copyImageToPBO(devPBO, devImage, width, height, Settings::toneMapping);
+	}
+
+	directFilter.nextFrame();
+	indirectFilter.nextFrame();
+
+	cudaGLUnmapBufferObject(pbo);
+	iteration++;
+	gBuffer.update(scene->camera);
+	scene->camera.position = camOrigPos;
 }
 
 void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods) {
@@ -251,11 +258,14 @@ void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods
 	if (action == GLFW_PRESS) {
 		switch (key) {
 		case GLFW_KEY_ESCAPE:
-			saveImage();
+			saveImage(false);
 			glfwSetWindowShouldClose(window, GL_TRUE);
 			break;
 		case GLFW_KEY_S:
-			saveImage();
+			saveImage(false);
+			break;
+		case GLFW_KEY_J:
+			saveImage(true);
 			break;
 		case GLFW_KEY_T:
 			Settings::toneMapping = (Settings::toneMapping + 1) % 3;

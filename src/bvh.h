@@ -13,21 +13,21 @@
 #define NullPrimitive -1
 
 struct AABB {
-    AABB() = default;
+    __host__ __device__ AABB() = default;
 
-    AABB(glm::vec3 pMin, glm::vec3 pMax) : pMin(pMin), pMax(pMax) {}
+    __host__ __device__ AABB(glm::vec3 pMin, glm::vec3 pMax) : pMin(pMin), pMax(pMax) {}
 
     AABB(glm::vec3 va, glm::vec3 vb, glm::vec3 vc) :
         pMin(glm::min(glm::min(va, vb), vc)), pMax(glm::max(glm::max(va, vb), vc)) {}
 
-    AABB(const AABB& a, const AABB& b) :
+    __host__ __device__ AABB(const AABB& a, const AABB& b) :
         pMin(glm::min(a.pMin, b.pMin)), pMax(glm::min(a.pMax, b.pMax)) {}
 
-    AABB operator () (glm::vec3 p) {
+    __host__ __device__ AABB operator () (glm::vec3 p) {
         return { glm::min(pMin, p), glm::max(pMax, p) };
     }
 
-    AABB operator () (const AABB& rhs) {
+    __host__ __device__ AABB operator () (const AABB& rhs) {
         return { glm::min(pMin, rhs.pMin), glm::max(pMax, rhs.pMax) };
     }
 
@@ -37,6 +37,11 @@ struct AABB {
         ss << ", pMax = " << vec3ToString(pMax);
         ss << ", center = " << vec3ToString(this->center()) << "]";
         return ss.str();
+    }
+
+    __host__ __device__ bool in(glm::vec3 p) const {
+        return (p.x < pMax.x && p.y < pMax.y && p.z < pMax.z &&
+            p.x > pMin.x && p.y > pMin.y && p.z > pMin.z);
     }
 
     __host__ __device__ glm::vec3 center() const {
