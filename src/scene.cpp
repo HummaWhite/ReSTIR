@@ -161,7 +161,7 @@ void Scene::buildDevData() {
     for (const auto& inst : modelInstances) {
         const auto& material = materials[inst.materialId];
         glm::vec3 radianceUnitArea = material.baseColor;
-        float powerUnitArea = Math::luminance(radianceUnitArea);
+        float powerUnitArea = Math::luminance(radianceUnitArea) * 2.f * glm::pi<float>();
 
         for (size_t i = 0; i < inst.meshData->vertices.size(); i++) {
             meshData.vertices.push_back(glm::vec3(inst.transform * glm::vec4(inst.meshData->vertices[i], 1.f)));

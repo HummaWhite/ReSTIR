@@ -235,6 +235,10 @@ void RenderImGui() {
 			ImGui::SliderFloat("Radius", &Settings::animateRadius, 0.f, 10.f);
 			ImGui::SliderFloat("Speed", &Settings::animateSpeed, 0.1f, 10.f);
 		}
+
+		if (ImGui::Checkbox("Use Reservoir", &Settings::useReservoir)) {
+			State::camChanged = true;
+		}
 		
 		ImGui::Checkbox("Modulate", &Settings::modulate);
 

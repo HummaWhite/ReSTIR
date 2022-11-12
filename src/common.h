@@ -23,7 +23,7 @@ struct ToneMapping {
 
 struct Tracer {
     enum {
-        Streamed = 0, SingleKernel = 1, BVHVisualize = 2, GBufferPreview = 3
+        Streamed = 0, SingleKernel = 1, BVHVisualize = 2, GBufferPreview = 3, ReSTIRDI = 4
     };
 };
 
@@ -43,6 +43,8 @@ struct Settings {
     static bool animateCamera;
     static float animateRadius;
     static float animateSpeed;
+    static float meshLightSampleWeight;
+    static bool useReservoir;
 };
 
 struct State {

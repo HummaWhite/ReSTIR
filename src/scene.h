@@ -285,9 +285,8 @@ struct DevScene {
         glm::vec3 dir = y - x;
         float dist = glm::length(dir);
         dir /= dist;
-        dist -= Eps;
-
         Ray ray = makeOffsetedRay(x, dir);
+        dist -= Eps * 2.f;
 
         MTBVHNode* nodes = BVHNodes[getMTBVHId(-ray.direction)];
         int node = 0;
@@ -358,6 +357,19 @@ struct DevScene {
             envMap->width * envMap->height * .5f;// *glm::sqrt(glm::max(1.f - w.z * w.z, FLT_EPSILON));
     }
 
+    __device__ float sampleEnvironmentMapNoVisibility(glm::vec3 pos, glm::vec2 r, glm::vec3& radiance, glm::vec3& wi) {
+        int pixId = envMapSampler.sample(r.x, r.y);
+
+        int y = pixId / envMap->width;
+        int x = pixId - y * envMap->width;
+
+        radiance = envMap->devData[pixId];
+        wi = Math::toSphere(glm::vec2((.5f + x) / envMap->width, (.5f + y) / envMap->height));
+
+        return Math::luminance(radiance) * sumLightPowerInv *
+            envMap->width * envMap->height * PiInv * PiInv * .5f;
+    }
+
     __device__ float sampleEnvironmentMap(glm::vec3 pos, glm::vec2 r, glm::vec3& radiance, glm::vec3& wi) {
         int pixId = envMapSampler.sample(r.x, r.y);
         
@@ -367,12 +379,7 @@ struct DevScene {
         radiance = envMap->devData[pixId];
         wi = Math::toSphere(glm::vec2((.5f + x) / envMap->width, (.5f + y) / envMap->height));
 
-#if BVH_DISABLE
-        bool occ = naiveTestOcclusion(pos, pos + wi * (FLT_MAX * .01f));
-#else
-        bool occ = testOcclusion(pos, pos + wi * 1e6f);
-#endif
-        if (occ) {
+        if (testOcclusion(pos, pos + wi * 1e6f)) {
             return InvalidPdf;
         }
         
@@ -380,9 +387,39 @@ struct DevScene {
             envMap->width * envMap->height * PiInv * PiInv * .5f;
     }
 
-    /**
-    * Returns solid angle probability
-    */
+    __device__ float sampleDirectLightNoVisibility(glm::vec3 pos, glm::vec4 r, glm::vec3& radiance, glm::vec3& wi, float& dist) {
+        if (lightSampler.length == 0) {
+            return InvalidPdf;
+        }
+        int lightId = lightSampler.sample(r.x, r.y);
+
+        if (lightId == lightSampler.length - 1 && envMapSampler.length != 0) {
+            dist = 1e24f;
+            return sampleEnvironmentMapNoVisibility(pos, glm::vec2(r.z, r.w), radiance, wi);
+        }
+        int primId = lightPrimIds[lightId];
+
+        glm::vec3 v0 = vertices[primId * 3 + 0];
+        glm::vec3 v1 = vertices[primId * 3 + 1];
+        glm::vec3 v2 = vertices[primId * 3 + 2];
+        glm::vec3 sampled = Math::sampleTriangleUniform(v0, v1, v2, r.z, r.w);
+
+        glm::vec3 normal = Math::triangleNormal(v0, v1, v2);
+        glm::vec3 posToSampled = sampled - pos;
+
+#if SCENE_LIGHT_SINGLE_SIDED
+        if (glm::dot(normal, posToSampled) > -1e-6f) {
+            return InvalidPdf;
+        }
+#endif
+        float area = Math::triangleArea(v0, v1, v2);
+        radiance = lightUnitRadiance[lightId];
+        wi = glm::normalize(posToSampled);
+        dist = glm::length(posToSampled);
+        float power = Math::luminance(radiance) / (area * 2.f * glm::pi<float>());
+        return Math::pdfAreaToSolidAngle(power * sumLightPowerInv, pos, sampled, normal);
+    }
+
     __device__ float sampleDirectLight(glm::vec3 pos, glm::vec4 r, glm::vec3& radiance, glm::vec3& wi) {
         if (lightSampler.length == 0) {
             return InvalidPdf;
@@ -399,25 +436,22 @@ struct DevScene {
         glm::vec3 v2 = vertices[primId * 3 + 2];
         glm::vec3 sampled = Math::sampleTriangleUniform(v0, v1, v2, r.z, r.w);
 
-#if BVH_DISABLE
-        bool occ = naiveTestOcclusion(pos, sampled);
-#else
-        bool occ = testOcclusion(pos, sampled);
-#endif
-        if (occ) {
+        if (testOcclusion(pos, sampled)) {
             return InvalidPdf;
         }
         glm::vec3 normal = Math::triangleNormal(v0, v1, v2);
         glm::vec3 posToSampled = sampled - pos;
 
 #if SCENE_LIGHT_SINGLE_SIDED
-        if (glm::dot(normal, posToSampled) > 0.f) {
+        if (glm::dot(normal, posToSampled) > -1e-6f) {
             return InvalidPdf;
         }
 #endif
+        float area = Math::triangleArea(v0, v1, v2);
         radiance = lightUnitRadiance[lightId];
         wi = glm::normalize(posToSampled);
-        return Math::pdfAreaToSolidAngle(Math::luminance(radiance) * sumLightPowerInv, pos, sampled, normal);
+        float power = Math::luminance(radiance) / (area * 2.f * glm::pi<float>());
+        return Math::pdfAreaToSolidAngle(power * sumLightPowerInv, pos, sampled, normal);
     }
 
     glm::vec3* vertices = nullptr;

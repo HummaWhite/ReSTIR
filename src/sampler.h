@@ -192,6 +192,7 @@ struct DevDiscreteSampler1D {
 		cudaMalloc(&devBinomDistribs, size);
 		cudaMemcpyHostToDev(devBinomDistribs, hstSampler.binomDistribs.data(), size);
 		length = hstSampler.binomDistribs.size();
+		sumAll = hstSampler.sumAll;
 	}
 
 	void destroy() {
@@ -207,6 +208,7 @@ struct DevDiscreteSampler1D {
 
 	DistribT* devBinomDistribs = nullptr;
 	int length = 0;
+	float sumAll = 0.f;
 };
 
 /**
