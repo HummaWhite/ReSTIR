@@ -5,36 +5,42 @@
 #include "scene.h"
 #include "common.h"
 
-#define ReservoirSize 64
+#define ReservoirSize 16
 
 __host__ __device__ static bool operator < (float x, glm::vec3 y) {
     return x < Math::luminance(y);
 }
 
-template<typename SampleT, typename WeightT>
+template<typename SampleT>
 struct Reservoir {
-    __host__ __device__ void update(const SampleT& val, WeightT weight, float r) {
+    __host__ __device__ Reservoir() : sample({}), sumWeight(1e-6f), resvWeight(0.f) {}
+
+    __host__ __device__ void update(const SampleT& val, const glm::vec3& weight, float r) {
         sumWeight += weight;
         numSamples++;
         if (r < weight / sumWeight) {
-            sampled = val;
+            sample = val;
         }
     }
 
-    __host__ __device__ void merge(Reservoir rhs, WeightT g, float r) {
-        int M0 = numSamples;
-        update(rhs.sampled, rhs.sumWeight * g * static_cast<float>(rhs.numSamples), r);
-        numSamples = M0 + rhs.numSamples;
-    }
-
     __host__ __device__ void clear() {
-        sumWeight = WeightT(0.f);
+        sumWeight = glm::vec3(1e-6f);
+        resvWeight = glm::vec3(0.f);
         numSamples = 0;
     }
 
-    SampleT sampled = SampleT();
-    WeightT sumWeight = WeightT(0.f);
+    __device__ glm::vec3 directPHat(const Intersection& intersec, const Material& material) const {
+        return sample.Li * material.BSDF(intersec.norm, intersec.wo, sample.wi) * Math::satDot(intersec.norm, sample.wi);
+    }
+
+    __device__ void calcReservoirWeight(const Intersection& intersec, const Material& material) {
+        resvWeight = sumWeight / (directPHat(intersec, material) * static_cast<float>(numSamples));
+    }
+
+    SampleT sample = SampleT();
     int numSamples = 0;
+    glm::vec3 sumWeight = glm::vec3(1e-6f);
+    glm::vec3 resvWeight = glm::vec3(0.f);
 };
 
 struct LightLiSample {
@@ -43,7 +49,7 @@ struct LightLiSample {
     float dist;
 };
 
-using DirectReservoir = Reservoir<LightLiSample, glm::vec3>;
+using DirectReservoir = Reservoir<LightLiSample>;
 
 void InitDataContainer(GuiDataContainer* guiData);
 

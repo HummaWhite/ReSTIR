@@ -350,6 +350,18 @@ WriteRadiance:
 	directIllum[index] = (directIllum[index] * float(iter) + direct) / float(iter + 1);
 }
 
+__device__ DirectReservoir mergeReservoir(
+	const DirectReservoir& a, const DirectReservoir& b, const Intersection& intersec, const Material& material,
+	glm::vec2 r
+) {
+	DirectReservoir reservoir{};
+	reservoir.update(a.sample, a.directPHat(intersec, material) * a.resvWeight * static_cast<float>(a.numSamples), r.x);
+	reservoir.update(b.sample, b.directPHat(intersec, material) * b.resvWeight * static_cast<float>(b.numSamples), r.y);
+	reservoir.numSamples = a.numSamples + b.numSamples;
+	reservoir.calcReservoirWeight(intersec, material);
+	return reservoir;
+}
+
 __global__ void ReSTIRDirectKernel(
 	int looper, int iter, int maxDepth,
 	DevScene* scene, Camera cam,
@@ -391,29 +403,40 @@ __global__ void ReSTIRDirectKernel(
 		intersec.norm = -intersec.norm;
 	}
 
-	DirectReservoir& reservoir = directReservoir[index];
-	reservoir.clear();
+	DirectReservoir reservoir;
+	for (int i = 0; i < ReservoirSize; i++) {
+		glm::vec3 Li;
+		glm::vec3 wi;
+		float dist;
 
-	if (!deltaBSDF) {
-		for (int i = 0; i < ReservoirSize; i++) {
-			glm::vec3 Li;
-			glm::vec3 wi;
-			float dist;
+		float p = scene->sampleDirectLightNoVisibility(intersec.pos, sample4D(rng), Li, wi, dist);
+		glm::vec3 g = Li * material.BSDF(intersec.norm, intersec.wo, wi) * Math::satDot(intersec.norm, wi);
+		glm::vec3 weight = (p > 0.f) ? g / p : glm::vec3(0.f);
+		reservoir.update({ Li, wi, dist }, weight, sample1D(rng));
+	}
+	reservoir.calcReservoirWeight(intersec, material);
 
-			float p = scene->sampleDirectLightNoVisibility(intersec.pos, sample4D(rng), Li, wi, dist);
-			glm::vec3 g = Li * material.BSDF(intersec.norm, intersec.wo, wi) * Math::satDot(intersec.norm, wi);
-			glm::vec3 weight = (p > 0.f) ? g / p : glm::vec3(0.f);
-			reservoir.update({ Li, wi, dist }, weight, sample1D(rng));
-		}
+	DirectReservoir& lastReservoir = directReservoir[index];
+	if (iter == 0) {
+		lastReservoir.clear();
 	}
 
-	LightLiSample sample = reservoir.sampled;
+	LightLiSample sample = reservoir.sample;
+	if (scene->testOcclusion(intersec.pos, intersec.pos + sample.wi * sample.dist)) {
+		//reservoir.sumWeight = glm::vec3(0.f);
+	}
+	lastReservoir = mergeReservoir(lastReservoir, reservoir, intersec, material, sample2D(rng));
+	sample = lastReservoir.sample;
+
 	if (!scene->testOcclusion(intersec.pos, intersec.pos + sample.wi * sample.dist)) {
-		direct = reservoir.sumWeight / static_cast<float>(ReservoirSize);
+		//direct = lastReservoir.sumWeight / static_cast<float>(lastReservoir.numSamples);
+		direct = lastReservoir.directPHat(intersec, material) * lastReservoir.resvWeight;
 	}
 
 WriteRadiance:
-	directIllum[index] = (directIllum[index] * float(iter) + direct) / float(iter + 1);
+	if (!Math::hasNanOrInf(direct)) {
+		directIllum[index] = (directIllum[index] * float(iter) + direct) / float(iter + 1);
+	}
 }
 
 void pathTrace(glm::vec3* devDirectIllum, glm::vec3* devIndirectIllum, int iter) {
