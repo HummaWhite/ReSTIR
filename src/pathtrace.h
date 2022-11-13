@@ -7,8 +7,14 @@
 
 #define ReservoirSize 16
 
-__host__ __device__ static bool operator < (float x, glm::vec3 y) {
-    return x < Math::luminance(y);
+__host__ __device__ inline bool operator < (float x, glm::vec3 y) {
+    //return x < Math::luminance(y);
+    return x * x < glm::dot(y, y);
+}
+
+__host__ __device__ inline bool operator < (glm::vec3 x, glm::vec3 y) {
+    //return Math::luminance(x) < Math::luminance(y);
+    return glm::dot(x, x) < glm::dot(y, y);
 }
 
 template<typename SampleT>
@@ -35,6 +41,18 @@ struct Reservoir {
 
     __device__ void calcReservoirWeight(const Intersection& intersec, const Material& material) {
         resvWeight = sumWeight / (directPHat(intersec, material) * static_cast<float>(numSamples));
+    }
+
+    __device__ void merge(const Reservoir& rhs, const Intersection& intersec, const Material& material, float r) {
+        glm::vec3 weight = directPHat(intersec, material) * resvWeight * static_cast<float>(numSamples);
+        glm::vec3 rhsWeight = rhs.directPHat(intersec, material) * rhs.resvWeight * static_cast<float>(rhs.numSamples);
+        sumWeight = weight + rhsWeight;
+
+        if (r * rhsWeight < sumWeight) {
+            sample = rhs.sample;
+        }
+        numSamples += rhs.numSamples;
+        calcReservoirWeight(intersec, material);
     }
 
     SampleT sample = SampleT();
