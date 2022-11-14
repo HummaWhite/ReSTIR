@@ -40,17 +40,40 @@ struct Reservoir {
 
     __device__ void checkValidity() {
         if (invalid()) {
-            //weight = 0.f;
             clear();
         }
     }
 
-    __device__ void merge(Reservoir& rhs, float r) {
+    __device__ void merge(const Reservoir& rhs, float r) {
         weight += rhs.weight;
         numSamples += rhs.numSamples;
 
         if (r * weight < rhs.weight) {
             sample = rhs.sample;
+        }
+    }
+
+    __device__ void clampedMerge(const Reservoir& rhs, int threshold, float r) {
+    }
+
+    template<int M>
+    __device__ void preClampedMerge(Reservoir rhs, float r) {
+        static_assert(M > 0, "M <= 0");
+        if (rhs.numSamples > 0 && rhs.numSamples > (M - 1) * numSamples && numSamples > 0) {
+            rhs.weight *= static_cast<float>(M - 1) * numSamples / rhs.numSamples;
+            rhs.numSamples = (M - 1) * numSamples;
+        }
+        merge(rhs, r);
+    }
+
+    template<int M>
+    __device__ void postClampedMerge(Reservoir rhs, float r) {
+        static_assert(M > 0, "M <= 0");
+        int curNumSample = numSamples;
+        merge(rhs, r);
+        if (curNumSample > 0 && numSamples > 0 && numSamples > M * curNumSample) {
+            weight *= static_cast<float>(M) * curNumSample / numSamples;
+            numSamples = M * curNumSample;
         }
     }
 

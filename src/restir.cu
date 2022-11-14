@@ -4,7 +4,7 @@
 
 static DirectReservoir* devDirectReservoir = nullptr;
 static DirectReservoir* devLastDirectReservoir = nullptr;
-static DirectReservoir* devDirectTmp = nullptr;
+static DirectReservoir* devDirectTemp = nullptr;
 static bool ReSTIRFirstFrame = true;
 
 __device__ DirectReservoir mergeReservoir(const DirectReservoir& a, const DirectReservoir& b, glm::vec2 r) {
@@ -37,7 +37,8 @@ __device__ T findTemporalNeighbor(T* reservoir, int idx, const GBuffer& gBuffer)
 			diff = true;
 		}
 	}
-	return diff ? T() : reservoir[lastIdx];
+	return diff ? T() :
+		reservoir[lastIdx].invalid() ? T() : reservoir[lastIdx];
 }
 
 template<typename T>
@@ -71,15 +72,30 @@ __device__ T findSpatialNeighborDisk(T* reservoir, int x, int y, const GBuffer& 
 			diff = true;
 		}
 	}
-	return diff ? T() : reservoir[pidx];
+	return diff ? T() :
+		reservoir[pidx].invalid() ? T() : reservoir[pidx];
 }
 
-__global__ void directPTAndTemporalReuse(
+__device__ DirectReservoir mergeSpatialNeighborDirect(
+	DirectReservoir* reservoirs, int x, int y,
+	const GBuffer& gBuffer, Sampler& rng
+) {
+	DirectReservoir reservoir;
+#pragma unroll
+	for (int i = 0; i < 5; i++) {
+		reservoir.merge(findSpatialNeighborDisk(reservoirs, x, y, gBuffer, sample2D(rng)), sample1D(rng));
+	}
+	reservoir.checkValidity();
+	return reservoir;
+}
+
+__global__ void ReSTIRDirectKernel(
 	int looper, int iter,
 	DevScene* scene, Camera cam,
 	glm::vec3* directIllum,
 	DirectReservoir* reservoirOut,
 	DirectReservoir* reservoirIn,
+	DirectReservoir* reservoirTemp,
 	GBuffer gBuffer, bool first
 ) {
 	int x = blockDim.x * blockIdx.x + threadIdx.x;
@@ -132,36 +148,48 @@ __global__ void directPTAndTemporalReuse(
 		}
 		reservoir.update({ Li, wi, dist }, weight, sample1D(rng));
 	}
+	LightLiSample sample = reservoir.sample;
 
-	if (!first) {
-		LightLiSample sample = reservoir.sample;
-
-		if (reservoir.invalid() || scene->testOcclusion(intersec.pos, intersec.pos + sample.wi * sample.dist)) {
-			reservoir.clear();
-		}
-
-		DirectReservoir temporalReservoir = findTemporalNeighbor(reservoirIn, index, gBuffer);
-		if (!temporalReservoir.invalid()) {
-			if (temporalReservoir.numSamples > 19 * reservoir.numSamples) {
-				temporalReservoir.weight *= 19.f * reservoir.numSamples / temporalReservoir.numSamples;
-				temporalReservoir.numSamples = 19 * reservoir.numSamples;
-			}
-			reservoir.merge(temporalReservoir, sample1D(rng));
-		}
+	if (scene->testOcclusion(intersec.pos, intersec.pos + sample.wi * sample.dist)) {
+		// Resetting reservoir is INCORRECT
+		// Instead, ZERO the weight
+		reservoir.weight = 0.f;
 	}
 
+	if (!first) {
+		reservoir.preClampedMerge<20>(findTemporalNeighbor(reservoirIn, index, gBuffer), sample1D(rng));
+	}
+
+	/*
+	__syncthreads();
+	reservoirTemp[index] = reservoir;
+	__syncthreads();
+	reservoir.clampedMerge<20>(mergeSpatialNeighborDirect(reservoirTemp, x, y, gBuffer, rng), sample1D(rng));
+	__syncthreads();
+	reservoirTemp[index] = reservoir;
+	__syncthreads();
+	reservoir.clampedMerge<20>(mergeSpatialNeighborDirect(reservoirTemp, x, y, gBuffer, rng), sample1D(rng));
+	*/
+
+	sample = reservoir.sample;
 	if (reservoir.invalid()) {
 		reservoir.clear();
 	}
+	else {
+		direct = sample.Li * material.BSDF(intersec.norm, intersec.wo, sample.wi) * Math::satDot(intersec.norm, sample.wi) *
+			reservoir.bigW(intersec, material);
+	}
 
+	if (Math::hasNanOrInf(direct)) {
+		direct = glm::vec3(0.f);
+	}
 	reservoirOut[index] = reservoir;
-	return;
 
 WriteRadiance:
 	directIllum[index] = (directIllum[index] * float(iter) + direct) / float(iter + 1);
 }
 
-__global__ void directSpatialReuse(
+__global__ void spatialReuseDirect(
 	int looper, int iter,
 	DirectReservoir* reservoirOut, DirectReservoir* reservoirIn,
 	DevScene* scene, GBuffer gBuffer
@@ -202,9 +230,9 @@ void ReSTIRDirect(glm::vec3* devDirectIllum, int iter, const GBuffer& gBuffer) {
 	dim3 blockNum(blockNumSinglePTX, blockNumSinglePTY);
 	dim3 blockSize(BlockSizeSinglePTX, BlockSizeSinglePTY);
 
-	directPTAndTemporalReuse<<<blockNum, blockSize>>>(
+	ReSTIRDirectKernel<<<blockNum, blockSize>>>(
 		State::looper, iter, State::scene->devScene, cam, devDirectIllum,
-		devDirectReservoir, devLastDirectReservoir, gBuffer, ReSTIRFirstFrame
+		devDirectReservoir, devLastDirectReservoir, devDirectTemp, gBuffer, ReSTIRFirstFrame
 	);
 	std::swap(devDirectReservoir, devLastDirectReservoir);
 
@@ -227,12 +255,12 @@ void ReSTIRInit() {
 	cudaMemset(devDirectReservoir, 0, pixelcount * sizeof(DirectReservoir));
 	devLastDirectReservoir = cudaMalloc<DirectReservoir>(pixelcount);
 	cudaMemset(devLastDirectReservoir, 0, pixelcount * sizeof(DirectReservoir));
-	devDirectTmp = cudaMalloc<DirectReservoir>(pixelcount);
-	cudaMemset(devDirectTmp, 0, pixelcount * sizeof(DirectReservoir));
+	devDirectTemp = cudaMalloc<DirectReservoir>(pixelcount);
+	cudaMemset(devDirectTemp, 0, pixelcount * sizeof(DirectReservoir));
 }
 
 void ReSTIRFree() {
 	cudaSafeFree(devDirectReservoir);
 	cudaSafeFree(devLastDirectReservoir);
-	cudaSafeFree(devDirectTmp);
+	cudaSafeFree(devDirectTemp);
 }
