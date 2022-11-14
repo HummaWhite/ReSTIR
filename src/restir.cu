@@ -4,6 +4,7 @@
 
 static DirectReservoir* devDirectReservoir = nullptr;
 static DirectReservoir* devLastDirectReservoir = nullptr;
+static DirectReservoir* devDirectTmp = nullptr;
 static bool ReSTIRFirstFrame = true;
 
 __device__ DirectReservoir mergeReservoir(const DirectReservoir& a, const DirectReservoir& b, glm::vec2 r) {
@@ -15,10 +16,10 @@ __device__ DirectReservoir mergeReservoir(const DirectReservoir& a, const Direct
 }
 
 template<typename T>
-__device__ T findTemporalReservoir(T* lastReservoir, int idx, const GBuffer& gBuffer, bool first) {
+__device__ T findTemporalNeighbor(T* reservoir, int idx, const GBuffer& gBuffer) {
 	int primId = gBuffer.primId()[idx];
 	int lastIdx = gBuffer.devMotion[idx];
-	bool diff = first;
+	bool diff = false;
 
 	if (lastIdx < 0) {
 		diff = true;
@@ -32,18 +33,48 @@ __device__ T findTemporalReservoir(T* lastReservoir, int idx, const GBuffer& gBu
 	else {
 		glm::vec3 norm = DECODE_NORM(gBuffer.normal()[idx]);
 		glm::vec3 lastNorm = DECODE_NORM(gBuffer.lastNormal()[lastIdx]);
-		if (glm::abs(glm::dot(norm, lastNorm)) < .1f) {
+		if (Math::absDot(norm, lastNorm) < .1f) {
 			diff = true;
 		}
 	}
-	return diff ? T() : lastReservoir[lastIdx];
+	return diff ? T() : reservoir[lastIdx];
 }
 
 template<typename T>
-__device__ T findSpatialReservoir(T* lastReservoirs, int idx, const GBuffer& gBuffer, T* spatialReservoir) {
+__device__ T findSpatialNeighborDisk(T* reservoir, int x, int y, const GBuffer& gBuffer, glm::vec2 r) {
+	const float Radius = 30.f;
+	int idx = y * gBuffer.width + x;
+
+	glm::vec2 p = Math::toConcentricDisk(r.x, r.y) * Radius;
+	int px = x + p.x;
+	int py = y + p.y;
+	int pidx = py * gBuffer.width + px;
+
+	bool diff = false;
+
+	if (px < 0 || px >= gBuffer.width || py < 0 || py >= gBuffer.height) {
+		diff = true;
+	}
+	else if (gBuffer.primId()[pidx] != gBuffer.primId()[idx]) {
+		diff = true;
+	}
+	else {
+		glm::vec3 norm = DECODE_NORM(gBuffer.normal()[idx]);
+		glm::vec3 pnorm = DECODE_NORM(gBuffer.normal()[pidx]);
+		if (Math::absDot(norm, pnorm) < .1f) {
+			diff = true;
+		}
+
+		glm::vec3 pos = gBuffer.position()[idx];
+		glm::vec3 ppos = gBuffer.position()[pidx];
+		if (glm::distance(pos, ppos) > .5f) {
+			diff = true;
+		}
+	}
+	return diff ? T() : reservoir[pidx];
 }
 
-__global__ void ReSTIRDirectKernel(
+__global__ void directPTAndTemporalReuse(
 	int looper, int iter,
 	DevScene* scene, Camera cam,
 	glm::vec3* directIllum,
@@ -101,54 +132,63 @@ __global__ void ReSTIRDirectKernel(
 		}
 		reservoir.update({ Li, wi, dist }, weight, sample1D(rng));
 	}
-	LightLiSample sample = reservoir.sample;
 
-	if (reservoir.invalid() || scene->testOcclusion(intersec.pos, intersec.pos + sample.wi * sample.dist)) {
-		reservoir.clear();
-	}
+	if (!first) {
+		LightLiSample sample = reservoir.sample;
 
-	DirectReservoir temporalReservoir = findTemporalReservoir(reservoirIn, index, gBuffer, first);
-	if (!temporalReservoir.invalid()) {
-		if (temporalReservoir.numSamples > 19 * reservoir.numSamples) {
-			temporalReservoir.weight *= 19.f * reservoir.numSamples / temporalReservoir.numSamples;
-			temporalReservoir.numSamples = 19 * reservoir.numSamples;
+		if (reservoir.invalid() || scene->testOcclusion(intersec.pos, intersec.pos + sample.wi * sample.dist)) {
+			reservoir.clear();
 		}
-		reservoir.merge(temporalReservoir, sample1D(rng));
-	}
 
-	/*
-#pragma unroll
-	for (int i = -1; i <= 1; i++) {
-		for (int j = -1; j <= 1; j++) {
-			int px = x + j;
-			int py = y + i;
-			if (px < 0 || px >= cam.resolution.x || py < 0 || py >= cam.resolution.y) {
-				continue;
+		DirectReservoir temporalReservoir = findTemporalNeighbor(reservoirIn, index, gBuffer);
+		if (!temporalReservoir.invalid()) {
+			if (temporalReservoir.numSamples > 19 * reservoir.numSamples) {
+				temporalReservoir.weight *= 19.f * reservoir.numSamples / temporalReservoir.numSamples;
+				temporalReservoir.numSamples = 19 * reservoir.numSamples;
 			}
-			int pidx = py * cam.resolution.x + px;
-			DirectReservoir spatialReservoir = reservoirIn[pidx];
-			spatialReservoir.checkValidity();
-			reservoir.merge(spatialReservoir, sample1D(rng));
+			reservoir.merge(temporalReservoir, sample1D(rng));
 		}
 	}
-	*/
 
 	if (reservoir.invalid()) {
 		reservoir.clear();
 	}
-	else {
-		LightLiSample sample = reservoir.sample;
-		direct = sample.Li * material.BSDF(intersec.norm, intersec.wo, sample.wi) * Math::satDot(intersec.norm, sample.wi) *
-			reservoir.bigW(intersec, material);
-	}
 
-	if (Math::hasNanOrInf(direct)) {
-		direct = glm::vec3(0.f);
-	}
 	reservoirOut[index] = reservoir;
+	return;
 
 WriteRadiance:
 	directIllum[index] = (directIllum[index] * float(iter) + direct) / float(iter + 1);
+}
+
+__global__ void directSpatialReuse(
+	int looper, int iter,
+	DirectReservoir* reservoirOut, DirectReservoir* reservoirIn,
+	DevScene* scene, GBuffer gBuffer
+) {
+	int x = blockDim.x * blockIdx.x + threadIdx.x;
+	int y = blockDim.y * blockIdx.y + threadIdx.y;
+	if (x >= gBuffer.width || y >= gBuffer.height) {
+		return;
+	}
+	int index = y * gBuffer.width + x;
+
+	Sampler rng = makeSeededRandomEngine(looper, index, 5 * ReservoirSize + 1, scene->sampleSequence);
+	DirectReservoir reservoir = reservoirIn[index];
+
+	if (reservoir.numSamples == 0) {
+		reservoirOut[index].clear();
+		return;
+	}
+
+#pragma unroll
+	for (int i = 0; i < 5; i++) {
+		DirectReservoir neighbor = findSpatialNeighborDisk(reservoirIn, x, y, gBuffer, sample2D(rng));
+		if (!neighbor.invalid()) {
+			reservoir.merge(neighbor, sample1D(rng));
+		}
+	}
+	reservoirOut[index] = reservoir;
 }
 
 void ReSTIRDirect(glm::vec3* devDirectIllum, int iter, const GBuffer& gBuffer) {
@@ -162,7 +202,7 @@ void ReSTIRDirect(glm::vec3* devDirectIllum, int iter, const GBuffer& gBuffer) {
 	dim3 blockNum(blockNumSinglePTX, blockNumSinglePTY);
 	dim3 blockSize(BlockSizeSinglePTX, BlockSizeSinglePTY);
 
-	ReSTIRDirectKernel<<<blockNum, blockSize>>>(
+	directPTAndTemporalReuse<<<blockNum, blockSize>>>(
 		State::looper, iter, State::scene->devScene, cam, devDirectIllum,
 		devDirectReservoir, devLastDirectReservoir, gBuffer, ReSTIRFirstFrame
 	);
@@ -187,9 +227,12 @@ void ReSTIRInit() {
 	cudaMemset(devDirectReservoir, 0, pixelcount * sizeof(DirectReservoir));
 	devLastDirectReservoir = cudaMalloc<DirectReservoir>(pixelcount);
 	cudaMemset(devLastDirectReservoir, 0, pixelcount * sizeof(DirectReservoir));
+	devDirectTmp = cudaMalloc<DirectReservoir>(pixelcount);
+	cudaMemset(devDirectTmp, 0, pixelcount * sizeof(DirectReservoir));
 }
 
 void ReSTIRFree() {
 	cudaSafeFree(devDirectReservoir);
 	cudaSafeFree(devLastDirectReservoir);
+	cudaSafeFree(devDirectTmp);
 }
