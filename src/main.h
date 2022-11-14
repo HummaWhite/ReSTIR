@@ -15,6 +15,7 @@
 
 #include "scene.h"
 #include "denoiser.h"
+#include "restir.h"
 
 extern Scene* scene;
 extern int iteration;

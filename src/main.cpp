@@ -74,15 +74,17 @@ int main(int argc, char** argv) {
 
 	// Initialize ImGui Data
 	InitImguiData(guiData);
-	InitDataContainer(guiData);
 
 	EAWFilter.create(width, height, 5);
 	directFilter.create(width, height, 5);
 	indirectFilter.create(width, height, 5);
 
 	scene->buildDevData();
+	State::scene = scene;
 	initImageBuffer();
-	pathTraceInit(scene);
+
+	pathTraceInit();
+	ReSTIRInit();
 
 	// GLFW main loop
 	mainLoop();
@@ -90,7 +92,10 @@ int main(int argc, char** argv) {
 	scene->clear();
 	Resource::clear();
 	freeImageBuffer();
+
 	pathTraceFree();
+	ReSTIRFree();
+
 	directFilter.destroy();
 	indirectFilter.destroy();
 
@@ -147,6 +152,7 @@ void runCuda() {
 			glm::vec3(glm::cos(t), 0.f, glm::sin(t)) * Settings::animateRadius;
 	}
 
+	State::camChanged = true;
 	if (State::camChanged) {
 		iteration = 0;
 		scene->camera.update();
@@ -155,7 +161,12 @@ void runCuda() {
 
 	gBuffer.render(scene->devScene, scene->camera);
 
-	ReSTIRDirect(devDirectIllum, iteration, Settings::useReservoir);
+	if (Settings::useReservoir) {
+		ReSTIRDirect(devDirectIllum, iteration, gBuffer);
+	}
+	else {
+		pathTraceDirect(devDirectIllum, iteration);
+	}
 	devImage = devDirectIllum;
 
 	uchar4* devPBO = nullptr;

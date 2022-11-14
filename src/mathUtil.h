@@ -53,6 +53,10 @@ namespace Math {
         return glm::normalize(v);
     }
 
+    __host__ __device__ inline bool isNanOrInf(float x) {
+        return isnan(x) || isinf(x);
+    }
+
     __host__ __device__ inline bool hasNanOrInf(glm::vec3 v) {
         return isnan(v.x) || isnan(v.y) || isnan(v.z) || isinf(v.x) || isinf(v.y) || isinf(v.z);
     }

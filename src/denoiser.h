@@ -9,53 +9,8 @@
 
 #include "common.h"
 #include "scene.h"
+#include "gbuffer.h"
 #include "pathtrace.h"
-
-struct GBuffer {
-#if DENOISER_ENCODE_NORMAL
-    using NormT = glm::vec2;
-#else
-    using NormT = glm::vec3;
-#endif
-
-    GBuffer() = default;
-
-    void create(int width, int height);
-    void destroy();
-    void render(DevScene* scene, const Camera& cam);
-    void update(const Camera& cam);
-
-    __device__ NormT* normal() { return devNormal[frameIdx]; }
-    __device__ NormT* lastNormal() { return devNormal[frameIdx ^ 1]; }
-
-    __device__ int* primId() { return devPrimId[frameIdx]; }
-    __device__ int* lastPrimId() { return devPrimId[frameIdx ^ 1]; }
-
-#if DENOISER_ENCODE_POSITION
-    __device__ float* depth() { return devDepth[frameIdx]; }
-    __device__ float* lastDepth() { return devDepth[frameIdx ^ 1]; }
-#else
-    __device__ glm::vec3* position() { return devPosition[frameIdx]; }
-    __device__ glm::vec3* lastPosition() { return devPosition[frameIdx ^ 1]; }
-#endif
-
-    glm::vec3* devAlbedo = nullptr;
-
-    int* devMotion = nullptr;
-    NormT* devNormal[2] = { nullptr };
-
-#if DENOISER_ENCODE_POSITION
-    float* devDepth[2] = { nullptr };
-#else
-    glm::vec3* devPosition[2] = { nullptr };
-#endif
-    int* devPrimId[2] = { nullptr };
-    int frameIdx = 0;
-
-    Camera lastCamera;
-    int width;
-    int height;
-};
 
 struct EAWaveletFilter {
     EAWaveletFilter() = default;

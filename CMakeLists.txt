@@ -91,6 +91,7 @@ set(headers
     src/common.h
     src/denoiser.h
     src/restir.h
+    src/gbuffer.h
     )
 
 set(sources
@@ -117,6 +118,7 @@ set(sources
     src/tiny_gltf.cpp
     src/denoiser.cu
     src/restir.cu
+    src/gbuffer.cu
     )
 
 list(SORT headers)

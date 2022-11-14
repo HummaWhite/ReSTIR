@@ -18,32 +18,13 @@
 #include "interactions.h"
 #include "mathUtil.h"
 #include "sampler.h"
+#include "restir.h"
 
-#define PixelIdxForTerminated -1
-
-static Scene* hstScene = nullptr;
-static GuiDataContainer* guiData = nullptr;
-static int looper = 0;
-
-static DirectReservoir* devDirectReservoir = nullptr;
- 
-void InitDataContainer(GuiDataContainer* imGuiData) {
-	guiData = imGuiData;
-}
-
-void pathTraceInit(Scene* scene) {
-	hstScene = scene;
-	const Camera& cam = hstScene->camera;
-	const int pixelcount = cam.resolution.x * cam.resolution.y;
-
-	devDirectReservoir = cudaMalloc<DirectReservoir>(pixelcount);
-	cudaMemset(devDirectReservoir, 0, pixelcount * sizeof(DirectReservoir));
-
+void pathTraceInit() {
 	checkCUDAError("pathTraceInit");
 }
 
 void pathTraceFree() {
-	cudaSafeFree(devDirectReservoir);
 }
 
 __global__ void sendImageToPBO(uchar4* pbo, glm::vec3* image, int width, int height, int toneMapping, float scale) {
@@ -295,11 +276,7 @@ WriteRadiance:
 	indirectIllum[index] = (indirectIllum[index] * float(iter) + indirect) / float(iter + 1);
 }
 
-__global__ void PTDirectKernel(
-	int looper, int iter, int maxDepth,
-	DevScene* scene, Camera cam,
-	glm::vec3* directIllum
-) {
+__global__ void PTDirectKernel(int looper, int iter, DevScene* scene, Camera cam, glm::vec3* directIllum) {
 	int x = blockDim.x * blockIdx.x + threadIdx.x;
 	int y = blockDim.y * blockIdx.y + threadIdx.y;
 	if (x >= cam.resolution.x || y >= cam.resolution.y) {
@@ -350,98 +327,8 @@ WriteRadiance:
 	directIllum[index] = (directIllum[index] * float(iter) + direct) / float(iter + 1);
 }
 
-__device__ DirectReservoir mergeReservoir(
-	const DirectReservoir& a, const DirectReservoir& b, const Intersection& intersec, const Material& material,
-	glm::vec2 r
-) {
-	DirectReservoir reservoir{};
-	reservoir.update(a.sample, a.directPHat(intersec, material) * a.resvWeight * static_cast<float>(a.numSamples), r.x);
-	reservoir.update(b.sample, b.directPHat(intersec, material) * b.resvWeight * static_cast<float>(b.numSamples), r.y);
-	reservoir.numSamples = a.numSamples + b.numSamples;
-	reservoir.calcReservoirWeight(intersec, material);
-	return reservoir;
-}
-
-__global__ void ReSTIRDirectKernel(
-	int looper, int iter, int maxDepth,
-	DevScene* scene, Camera cam,
-	glm::vec3* directIllum,
-	DirectReservoir* directReservoir
-) {
-	int x = blockDim.x * blockIdx.x + threadIdx.x;
-	int y = blockDim.y * blockIdx.y + threadIdx.y;
-	if (x >= cam.resolution.x || y >= cam.resolution.y) {
-		return;
-	}
-	glm::vec3 direct(0.f);
-
-	int index = y * cam.resolution.x + x;
-	Sampler rng = makeSeededRandomEngine(looper, index, 0, scene->sampleSequence);
-
-	Ray ray = cam.sample(x, y, sample4D(rng));
-	Intersection intersec;
-	scene->intersect(ray, intersec);
-
-	if (intersec.primId == NullPrimitive) {
-		if (scene->envMap != nullptr) {
-			direct = scene->envMap->linearSample(Math::toPlane(ray.direction));
-		}
-		goto WriteRadiance;
-	}
-
-	Material material = scene->getTexturedMaterialAndSurface(intersec);
-
-	if (material.type == Material::Type::Light) {
-		direct = material.baseColor;
-		goto WriteRadiance;
-	}
-
-	intersec.wo = -ray.direction;
-
-	bool deltaBSDF = (material.type == Material::Type::Dielectric);
-	if (!deltaBSDF && glm::dot(intersec.norm, intersec.wo) < 0.f) {
-		intersec.norm = -intersec.norm;
-	}
-
-	DirectReservoir reservoir;
-	for (int i = 0; i < ReservoirSize; i++) {
-		glm::vec3 Li;
-		glm::vec3 wi;
-		float dist;
-
-		float p = scene->sampleDirectLightNoVisibility(intersec.pos, sample4D(rng), Li, wi, dist);
-		glm::vec3 g = Li * material.BSDF(intersec.norm, intersec.wo, wi) * Math::satDot(intersec.norm, wi);
-		glm::vec3 weight = (p > 0.f) ? g / p : glm::vec3(0.f);
-		reservoir.update({ Li, wi, dist }, weight, sample1D(rng));
-	}
-	reservoir.calcReservoirWeight(intersec, material);
-
-	DirectReservoir& lastReservoir = directReservoir[index];
-	glm::vec3 lastResvWeight = lastReservoir.resvWeight;
-	if (iter == 0) {
-		lastReservoir.clear();
-	}
-
-	LightLiSample sample = reservoir.sample;
-	lastReservoir.merge(reservoir, intersec, material, sample1D(rng));
-	sample = lastReservoir.sample;
-
-	if (!scene->testOcclusion(intersec.pos, intersec.pos + sample.wi * sample.dist)) {
-		direct = lastReservoir.sumWeight / static_cast<float>(lastReservoir.numSamples);
-		//direct = lastReservoir.directPHat(intersec, material) * lastReservoir.resvWeight;
-	}
-
-	if (Math::hasNanOrInf(lastReservoir.sumWeight) || Math::hasNanOrInf(direct)) {
-		direct = glm::vec3(0.f);
-		lastReservoir.clear();
-	}
-
-WriteRadiance:
-	directIllum[index] = (directIllum[index] * float(iter) + direct) / float(iter + 1);
-}
-
 void pathTrace(glm::vec3* devDirectIllum, glm::vec3* devIndirectIllum, int iter) {
-	const Camera& cam = hstScene->camera;
+	const Camera& cam = State::scene->camera;
 
 	const int BlockSizeSinglePTX = 8;
 	const int BlockSizeSinglePTY = 8;
@@ -452,30 +339,34 @@ void pathTrace(glm::vec3* devDirectIllum, glm::vec3* devIndirectIllum, int iter)
 	dim3 singlePTBlockSize(BlockSizeSinglePTX, BlockSizeSinglePTY);
 
 	singleKernelPT<<<singlePTBlockNum, singlePTBlockSize>>>(
-		looper, iter, Settings::traceDepth, hstScene->devScene, cam, devDirectIllum, devIndirectIllum
+		State::looper, iter, Settings::traceDepth, State::scene->devScene, cam, devDirectIllum, devIndirectIllum
 	);
 
 	checkCUDAError("pathTrace");
-	looper = (looper + 1) % SobolSampleNum;
+#if SAMPLER_USE_SOBOL
+	State::looper = (State::looper + 1) % SobolSampleNum;
+#else
+	State::looper++;
+#endif
 }
 
-void ReSTIRDirect(glm::vec3* directOutput, int iter, bool useReservoir) {
-	const Camera& cam = hstScene->camera;
+void pathTraceDirect(glm::vec3* devDirectIllum, int iter) {
+	const Camera& cam = State::scene->camera;
 
 	const int BlockSizeSinglePTX = 8;
 	const int BlockSizeSinglePTY = 8;
 	int blockNumSinglePTX = ceilDiv(cam.resolution.x, BlockSizeSinglePTX);
 	int blockNumSinglePTY = ceilDiv(cam.resolution.y, BlockSizeSinglePTY);
 
-	dim3 blockNum(blockNumSinglePTX, blockNumSinglePTY);
-	dim3 blockSize(BlockSizeSinglePTX, BlockSizeSinglePTY);
+	dim3 singlePTBlockNum(blockNumSinglePTX, blockNumSinglePTY);
+	dim3 singlePTBlockSize(BlockSizeSinglePTX, BlockSizeSinglePTY);
 
-	if (useReservoir) {
-		ReSTIRDirectKernel<<<blockNum, blockSize>>>(looper, iter, Settings::traceDepth, hstScene->devScene, cam, directOutput, devDirectReservoir);
-	}
-	else {
-		PTDirectKernel<<<blockNum, blockSize>>>(looper, iter, Settings::traceDepth, hstScene->devScene, cam, directOutput);
-	}
-	checkCUDAError("ReSTIR Direct");
-	looper = (looper + 1) % SobolSampleNum;
+	PTDirectKernel<<<singlePTBlockNum, singlePTBlockSize>>>(State::looper, iter, State::scene->devScene, cam, devDirectIllum);
+
+	checkCUDAError("pathTrace");
+#if SAMPLER_USE_SOBOL
+	State::looper = (State::looper + 1) % SobolSampleNum;
+#else
+	State::looper++;
+#endif
 }

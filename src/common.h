@@ -1,7 +1,7 @@
 #pragma once
 #include <iostream>
 
-#define SAMPLER_USE_SOBOL true
+#define SAMPLER_USE_SOBOL false
 
 #define SCENE_LIGHT_SINGLE_SIDED true
 
@@ -33,6 +33,8 @@ struct Denoiser {
     };
 };
 
+struct Scene;
+
 struct Settings {
     static int traceDepth;
     static int toneMapping;
@@ -49,4 +51,6 @@ struct Settings {
 
 struct State {
     static bool camChanged;
+    static int looper;
+    static Scene* scene;
 };

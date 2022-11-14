@@ -13,3 +13,5 @@ float Settings::meshLightSampleWeight = 1.f;
 bool Settings::useReservoir = true;
 
 bool State::camChanged = true;
+int State::looper = 0;
+Scene* State::scene = nullptr;
