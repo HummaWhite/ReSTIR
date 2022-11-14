@@ -2,6 +2,8 @@
 
 #define ReservoirSize 32
 
+using DirectReservoir = Reservoir<LightLiSample>;
+
 static DirectReservoir* devDirectReservoir = nullptr;
 static DirectReservoir* devLastDirectReservoir = nullptr;
 static DirectReservoir* devDirectTemp = nullptr;
@@ -37,13 +39,13 @@ __device__ T findTemporalNeighbor(T* reservoir, int idx, const GBuffer& gBuffer)
 			diff = true;
 		}
 	}
-	return diff ? T() :
-		reservoir[lastIdx].invalid() ? T() : reservoir[lastIdx];
+	return diff ? T() : reservoir[lastIdx];
 }
 
 template<typename T>
 __device__ T findSpatialNeighborDisk(T* reservoir, int x, int y, const GBuffer& gBuffer, glm::vec2 r) {
-	const float Radius = 30.f;
+	const float Radius = 5.f;
+
 	int idx = y * gBuffer.width + x;
 
 	glm::vec2 p = Math::toConcentricDisk(r.x, r.y) * Radius;
@@ -53,7 +55,7 @@ __device__ T findSpatialNeighborDisk(T* reservoir, int x, int y, const GBuffer& 
 
 	bool diff = false;
 
-	if (px < 0 || px >= gBuffer.width || py < 0 || py >= gBuffer.height) {
+	if (px < 0 || px >= gBuffer.width || py < 0 || py >= gBuffer.height || (px == x && py == y)) {
 		diff = true;
 	}
 	else if (gBuffer.primId()[pidx] != gBuffer.primId()[idx]) {
@@ -72,8 +74,7 @@ __device__ T findSpatialNeighborDisk(T* reservoir, int x, int y, const GBuffer& 
 			diff = true;
 		}
 	}
-	return diff ? T() :
-		reservoir[pidx].invalid() ? T() : reservoir[pidx];
+	return diff ? T() : reservoir[pidx];
 }
 
 __device__ DirectReservoir mergeSpatialNeighborDirect(
@@ -83,20 +84,21 @@ __device__ DirectReservoir mergeSpatialNeighborDirect(
 	DirectReservoir reservoir;
 #pragma unroll
 	for (int i = 0; i < 5; i++) {
-		reservoir.merge(findSpatialNeighborDisk(reservoirs, x, y, gBuffer, sample2D(rng)), sample1D(rng));
+		DirectReservoir spatial = findSpatialNeighborDisk(reservoirs, x, y, gBuffer, sample2D(rng));
+		if (!spatial.invalid()) {
+			reservoir.merge(spatial, sample1D(rng));
+		}
 	}
-	reservoir.checkValidity();
 	return reservoir;
 }
 
 __global__ void ReSTIRDirectKernel(
-	int looper, int iter,
-	DevScene* scene, Camera cam,
+	int looper, int iter, DevScene* scene, Camera cam,
 	glm::vec3* directIllum,
 	DirectReservoir* reservoirOut,
 	DirectReservoir* reservoirIn,
 	DirectReservoir* reservoirTemp,
-	GBuffer gBuffer, bool first
+	GBuffer gBuffer, bool first, int reuseState
 ) {
 	int x = blockDim.x * blockIdx.x + threadIdx.x;
 	int y = blockDim.y * blockIdx.y + threadIdx.y;
@@ -120,6 +122,7 @@ __global__ void ReSTIRDirectKernel(
 	}
 
 	Material material = scene->getTexturedMaterialAndSurface(intersec);
+	material.baseColor = glm::vec3(1.f);
 
 	if (material.type == Material::Type::Light) {
 		direct = material.baseColor;
@@ -156,36 +159,47 @@ __global__ void ReSTIRDirectKernel(
 		reservoir.weight = 0.f;
 	}
 
-	if (!first) {
-		reservoir.preClampedMerge<20>(findTemporalNeighbor(reservoirIn, index, gBuffer), sample1D(rng));
+	if (!first && (reuseState & ReservoirReuse::Temporal)) {
+		DirectReservoir temporal = findTemporalNeighbor(reservoirIn, index, gBuffer);
+		if (!temporal.invalid()) {
+			reservoir.preClampedMerge<20>(temporal, sample1D(rng));
+		}
 	}
 
-	/*
-	__syncthreads();
-	reservoirTemp[index] = reservoir;
-	__syncthreads();
-	reservoir.clampedMerge<20>(mergeSpatialNeighborDirect(reservoirTemp, x, y, gBuffer, rng), sample1D(rng));
-	__syncthreads();
-	reservoirTemp[index] = reservoir;
-	__syncthreads();
-	reservoir.clampedMerge<20>(mergeSpatialNeighborDirect(reservoirTemp, x, y, gBuffer, rng), sample1D(rng));
-	*/
+	if (reuseState & ReservoirReuse::Spatial) {
+		reservoir.checkValidity();
+		reservoirTemp[index] = reservoir;
+		__syncthreads();
+
+		DirectReservoir spatialAggregate = mergeSpatialNeighborDirect(reservoirTemp, x, y, gBuffer, rng);
+		if (!spatialAggregate.invalid()) {
+			//reservoir.merge(spatialAggregate, sample1D(rng));
+			reservoir.preClampedMerge<4>(spatialAggregate, sample1D(rng));
+		}
+
+		__syncthreads();
+		reservoirTemp[index] = reservoir;
+		__syncthreads();
+		spatialAggregate = mergeSpatialNeighborDirect(reservoirTemp, x, y, gBuffer, rng);
+		if (!spatialAggregate.invalid()) {
+			reservoir.preClampedMerge<4>(spatialAggregate, sample1D(rng));
+		}
+	}
 
 	sample = reservoir.sample;
-	if (reservoir.invalid()) {
-		reservoir.clear();
-	}
-	else {
+	if (!reservoir.invalid()) {
 		direct = sample.Li * material.BSDF(intersec.norm, intersec.wo, sample.wi) * Math::satDot(intersec.norm, sample.wi) *
 			reservoir.bigW(intersec, material);
 	}
+	reservoir.checkValidity();
+	reservoirOut[index] = reservoir;
 
 	if (Math::hasNanOrInf(direct)) {
 		direct = glm::vec3(0.f);
 	}
-	reservoirOut[index] = reservoir;
 
 WriteRadiance:
+	direct *= gBuffer.devAlbedo[index];
 	directIllum[index] = (directIllum[index] * float(iter) + direct) / float(iter + 1);
 }
 
@@ -232,7 +246,8 @@ void ReSTIRDirect(glm::vec3* devDirectIllum, int iter, const GBuffer& gBuffer) {
 
 	ReSTIRDirectKernel<<<blockNum, blockSize>>>(
 		State::looper, iter, State::scene->devScene, cam, devDirectIllum,
-		devDirectReservoir, devLastDirectReservoir, devDirectTemp, gBuffer, ReSTIRFirstFrame
+		devDirectReservoir, devLastDirectReservoir, devDirectTemp, gBuffer, ReSTIRFirstFrame,
+		Settings::reservoirReuse
 	);
 	std::swap(devDirectReservoir, devLastDirectReservoir);
 

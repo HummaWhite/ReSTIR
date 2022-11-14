@@ -152,7 +152,9 @@ void runCuda() {
 			glm::vec3(glm::cos(t), 0.f, glm::sin(t)) * Settings::animateRadius;
 	}
 
-	State::camChanged = true;
+	if (!Settings::accumulate) {
+		State::camChanged = true;
+	}
 	if (State::camChanged) {
 		iteration = 0;
 		scene->camera.update();

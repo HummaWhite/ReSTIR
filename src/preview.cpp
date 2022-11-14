@@ -225,7 +225,17 @@ void RenderImGui() {
 
 	ImGui::Begin("Options"); {
 		const char* Denoisers[] = { "None", "EA A-Trous", "SVGF" };
-		if (ImGui::Combo("Denoiser", &Settings::denoiser, Denoisers, IM_ARRAYSIZE(Denoisers))) {
+
+		if (ImGui::Checkbox("ReSTIR", &Settings::useReservoir)) {
+			State::camChanged = true;
+		}
+
+		const char* ReuseState[] = { "None", "Temporal", "Spatial", "Spatiotemporal" };
+		if (ImGui::Combo("Reuse State", &Settings::reservoirReuse, ReuseState, IM_ARRAYSIZE(ReuseState))) {
+			State::camChanged = true;
+		}
+
+		if (ImGui::Checkbox("Accumulate", &Settings::accumulate)) {
 			State::camChanged = true;
 		}
 
@@ -234,10 +244,6 @@ void RenderImGui() {
 			State::camChanged = true;
 			ImGui::SliderFloat("Radius", &Settings::animateRadius, 0.f, 10.f);
 			ImGui::SliderFloat("Speed", &Settings::animateSpeed, 0.1f, 10.f);
-		}
-
-		if (ImGui::Checkbox("Use Reservoir", &Settings::useReservoir)) {
-			State::camChanged = true;
 		}
 		
 		ImGui::Checkbox("Modulate", &Settings::modulate);

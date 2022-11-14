@@ -11,6 +11,8 @@ float Settings::animateRadius = 1.f;
 float Settings::animateSpeed = 2.7f;
 float Settings::meshLightSampleWeight = 1.f;
 bool Settings::useReservoir = true;
+int Settings::reservoirReuse = ReservoirReuse::Temporal;
+bool Settings::accumulate = false;
 
 bool State::camChanged = true;
 int State::looper = 0;

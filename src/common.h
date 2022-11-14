@@ -33,6 +33,15 @@ struct Denoiser {
     };
 };
 
+struct ReservoirReuse {
+    enum {
+        None = 0b00,
+        Temporal = 0b01,
+        Spatial = 0b10,
+        Spatiotemporal = 0b11,
+    };
+};
+
 struct Scene;
 
 struct Settings {
@@ -47,6 +56,8 @@ struct Settings {
     static float animateSpeed;
     static float meshLightSampleWeight;
     static bool useReservoir;
+    static int reservoirReuse;
+    static bool accumulate;
 };
 
 struct State {

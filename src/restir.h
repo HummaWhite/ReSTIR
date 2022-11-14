@@ -53,7 +53,13 @@ struct Reservoir {
         }
     }
 
-    __device__ void clampedMerge(const Reservoir& rhs, int threshold, float r) {
+    __device__ void clampedMerge(Reservoir rhs, int threshold, float r) {
+        int clamp = threshold - numSamples;
+        if (rhs.numSamples > clamp) {
+            rhs.weight = static_cast<float>(clamp) / rhs.numSamples;
+            rhs.numSamples = clamp;
+        }
+        merge(rhs, r);
     }
 
     template<int M>
@@ -87,8 +93,6 @@ struct LightLiSample {
     glm::vec3 wi;
     float dist;
 };
-
-using DirectReservoir = Reservoir<LightLiSample>;
 
 void ReSTIRInit();
 void ReSTIRFree();
