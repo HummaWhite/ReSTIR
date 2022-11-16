@@ -49,8 +49,8 @@ __device__ T findSpatialNeighborDisk(T* reservoir, int x, int y, const GBuffer& 
 	int idx = y * gBuffer.width + x;
 
 	glm::vec2 p = Math::toConcentricDisk(r.x, r.y) * Radius;
-	int px = x + p.x;
-	int py = y + p.y;
+	int px = x + .5f + p.x;
+	int py = y + .5f + p.y;
 	int pidx = py * gBuffer.width + px;
 
 	bool diff = false;
@@ -64,13 +64,18 @@ __device__ T findSpatialNeighborDisk(T* reservoir, int x, int y, const GBuffer& 
 	else {
 		glm::vec3 norm = DECODE_NORM(gBuffer.normal()[idx]);
 		glm::vec3 pnorm = DECODE_NORM(gBuffer.normal()[pidx]);
-		if (Math::absDot(norm, pnorm) < .1f) {
+		if (glm::dot(norm, pnorm) < .1f) {
 			diff = true;
 		}
-
+#if DENOISER_ENCODE_POSITION
+		float depth = gBuffer.depth()[idx];
+		float pdepth = gBuffer.depth()[pidx];
+		if (glm::abs(depth - pdepth) > depth * .1f) {
+#else
 		glm::vec3 pos = gBuffer.position()[idx];
 		glm::vec3 ppos = gBuffer.position()[pidx];
-		if (glm::distance(pos, ppos) > .5f) {
+		if (glm::distance(pos, ppos) > .1f) {
+#endif
 			diff = true;
 		}
 	}
@@ -166,17 +171,20 @@ __global__ void ReSTIRDirectKernel(
 		}
 	}
 
-	if (reuseState & ReservoirReuse::Spatial) {
+	sample = reservoir.sample;
+	DirectReservoir tempReservoir = reservoir;
+
+	if ((reuseState & ReservoirReuse::Spatial)) {
 		reservoir.checkValidity();
 		reservoirTemp[index] = reservoir;
 		__syncthreads();
 
 		DirectReservoir spatialAggregate = mergeSpatialNeighborDirect(reservoirTemp, x, y, gBuffer, rng);
-		if (!spatialAggregate.invalid()) {
-			//reservoir.merge(spatialAggregate, sample1D(rng));
-			reservoir.preClampedMerge<4>(spatialAggregate, sample1D(rng));
+		if (!spatialAggregate.invalid() && !reservoir.invalid()) {
+			reservoir.merge(spatialAggregate, sample1D(rng));
 		}
 
+		/*
 		__syncthreads();
 		reservoirTemp[index] = reservoir;
 		__syncthreads();
@@ -184,15 +192,16 @@ __global__ void ReSTIRDirectKernel(
 		if (!spatialAggregate.invalid()) {
 			reservoir.preClampedMerge<4>(spatialAggregate, sample1D(rng));
 		}
+		*/
 	}
+	tempReservoir.checkValidity();
+	reservoirOut[index] = tempReservoir;
 
 	sample = reservoir.sample;
 	if (!reservoir.invalid()) {
 		direct = sample.Li * material.BSDF(intersec.norm, intersec.wo, sample.wi) * Math::satDot(intersec.norm, sample.wi) *
 			reservoir.bigW(intersec, material);
 	}
-	reservoir.checkValidity();
-	reservoirOut[index] = reservoir;
 
 	if (Math::hasNanOrInf(direct)) {
 		direct = glm::vec3(0.f);

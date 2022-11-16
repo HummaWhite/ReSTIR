@@ -7,7 +7,7 @@
 
 #define DENOISER_DEMODULATE true
 #define DENOISER_ENCODE_NORMAL false
-#define DENOISER_ENCODE_POSITION false
+#define DENOISER_ENCODE_POSITION true
 
 #define DEMODULATE_EPS 1e-3f
 
