@@ -7,7 +7,6 @@ imgui.ini
 *.vcxproj
 *.xcodeproj
 build
-img
 scenes
 sobol_10k_200.bin
 
