@@ -1,6 +1,9 @@
 ## CUDA ReSTIR
 
 ### Direct Illumination
+#### Overview
+![](https://raw.githubusercontent.com/HummaWhite/hummawhite.github.io/main/img/restir_di.jpg)
+
 #### Spatiotemporal
 ![](./img/5_spatiotemporal.jpg)
 

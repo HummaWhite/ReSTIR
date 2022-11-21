@@ -199,8 +199,10 @@ __global__ void ReSTIRDirectKernel(
 
 	sample = reservoir.sample;
 	if (!reservoir.invalid()) {
-		direct = sample.Li * material.BSDF(intersec.norm, intersec.wo, sample.wi) * Math::satDot(intersec.norm, sample.wi) *
-			reservoir.bigW(intersec, material);
+		/*direct = sample.Li * material.BSDF(intersec.norm, intersec.wo, sample.wi) * Math::satDot(intersec.norm, sample.wi) *
+			reservoir.bigW(intersec, material);*/
+		glm::vec3 LiBSDF = sample.Li * material.BSDF(intersec.norm, intersec.wo, sample.wi);
+		direct = LiBSDF / DirectReservoir::toScalar(LiBSDF) * reservoir.weight / static_cast<float>(reservoir.numSamples);
 	}
 
 	if (Math::hasNanOrInf(direct)) {
