@@ -164,10 +164,12 @@ void runCuda() {
 	gBuffer.render(scene->devScene, scene->camera);
 
 	if (Settings::useReservoir) {
-		ReSTIRDirect(devDirectIllum, iteration, gBuffer);
+		//ReSTIRDirect(devDirectIllum, iteration, gBuffer);
+		ReSTIRIndirect(devDirectIllum, iteration, gBuffer);
 	}
 	else {
-		pathTraceDirect(devDirectIllum, iteration);
+		//pathTraceDirect(devDirectIllum, iteration);
+		pathTraceIndirect(devDirectIllum, iteration);
 	}
 	devImage = devDirectIllum;
 

@@ -4,13 +4,35 @@
 #include "scene.h"
 #include "gbuffer.h"
 
+struct DirectLiSample {
+    glm::vec3 Li;
+    glm::vec3 wi;
+    float dist;
+};
+
+struct IndirectLiSample {
+    __host__ __device__ IndirectLiSample() : Lo(0.f) {}
+
+    __host__ __device__ bool invalid() const {
+        return Math::luminance(Lo) < 1e-8f;
+    }
+
+    __host__ __device__ glm::vec3 wi() const {
+        return glm::normalize(xs - xv);
+    }
+
+    glm::vec3 Lo;
+    glm::vec3 xv, nv;
+    glm::vec3 xs, ns;
+};
+
 template<typename SampleT>
 struct Reservoir {
     __host__ __device__ Reservoir() = default;
 
     static __host__ __device__ float toScalar(glm::vec3 x) {
-        //return Math::luminance(x);
-        return glm::length(x);
+        return Math::luminance(x);
+        //return glm::length(x);
     }
 
     __host__ __device__ void update(const SampleT& newSample, float newWeight, float r) {
@@ -24,14 +46,6 @@ struct Reservoir {
     __host__ __device__ void clear() {
         weight = 0.f;
         numSamples = 0;
-    }
-
-    __device__ glm::vec3 pHat(const Intersection& intersec, const Material& material) const {
-        return sample.Li * material.BSDF(intersec.norm, intersec.wo, sample.wi) * Math::satDot(intersec.norm, sample.wi);
-    }
-
-    __device__ float bigW(const Intersection& intersec, const Material& material) {
-        return weight / (toScalar(pHat(intersec, material)) * static_cast<float>(numSamples));
     }
 
     __device__ bool invalid() {
@@ -63,11 +77,26 @@ struct Reservoir {
     }
 
     template<int M>
+    __device__ void clamp() {
+        static_assert(M > 0, "M <= 0");
+        if (numSamples > M) {
+            weight *= static_cast<float>(M) / numSamples;
+            numSamples = M;
+        }
+    }
+
+    __device__ void clamp(int val) {
+        if (numSamples > val) {
+            weight *= static_cast<float>(val) / numSamples;
+            numSamples = val;
+        }
+    }
+
+    template<int M>
     __device__ void preClampedMerge(Reservoir rhs, float r) {
         static_assert(M > 0, "M <= 0");
-        if (rhs.numSamples > 0 && rhs.numSamples > (M - 1) * numSamples && numSamples > 0) {
-            rhs.weight *= static_cast<float>(M - 1) * numSamples / rhs.numSamples;
-            rhs.numSamples = (M - 1) * numSamples;
+        if (numSamples > 0) {
+            rhs.clamp((M - 1) * numSamples);
         }
         merge(rhs, r);
     }
@@ -77,9 +106,8 @@ struct Reservoir {
         static_assert(M > 0, "M <= 0");
         int curNumSample = numSamples;
         merge(rhs, r);
-        if (curNumSample > 0 && numSamples > 0 && numSamples > M * curNumSample) {
-            weight *= static_cast<float>(M) * curNumSample / numSamples;
-            numSamples = M * curNumSample;
+        if (numSamples > 0 && curNumSample > 0) {
+            clamp(M * curNumSample);
         }
     }
 
@@ -88,13 +116,18 @@ struct Reservoir {
     float weight = 0.f;
 };
 
-struct LightLiSample {
-    glm::vec3 Li;
-    glm::vec3 wi;
-    float dist;
-};
+template<typename T>
+__device__ Reservoir<T> mergeReservoir(const Reservoir<T>& a, const Reservoir<T>& b, glm::vec2 r) {
+    Reservoir<T> reservoir;
+    reservoir.update(a.sample, a.weight, r.x);
+    reservoir.update(b.sample, b.weight, r.y);
+    reservoir.numSamples = a.numSamples + b.numSamples;
+    return reservoir;
+}
 
 void ReSTIRInit();
 void ReSTIRFree();
+void ReSTIRReset();
 
 void ReSTIRDirect(glm::vec3* devDirectIllum, int iter, const GBuffer& gBuffer);
+void ReSTIRIndirect(glm::vec3* devIndirectIllum, int iter, const GBuffer& gBuffer);

@@ -14,3 +14,4 @@ void pathTraceInit();
 void pathTraceFree();
 void pathTrace(glm::vec3* devDirectIllum, glm::vec3* devIndirectIllum, int iter);
 void pathTraceDirect(glm::vec3* devDirectIllum, int iter);
+void pathTraceIndirect(glm::vec3* devIndirectIllum, int iter);

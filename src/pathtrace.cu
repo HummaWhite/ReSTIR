@@ -327,6 +327,110 @@ WriteRadiance:
 	directIllum[index] = (directIllum[index] * float(iter) + direct) / float(iter + 1);
 }
 
+__global__ void PTIndirectKernel(int looper, int iter, int maxDepth, DevScene* scene, Camera cam, glm::vec3* indirectIllum) {
+	int x = blockDim.x * blockIdx.x + threadIdx.x;
+	int y = blockDim.y * blockIdx.y + threadIdx.y;
+	if (x >= cam.resolution.x || y >= cam.resolution.y) {
+		return;
+	}
+	glm::vec3 indirect(0.f);
+
+	int index = y * cam.resolution.x + x;
+	Sampler rng = makeSeededRandomEngine(looper, index, 0, scene->sampleSequence);
+
+	Ray ray = cam.sample(x, y, sample4D(rng));
+	Intersection intersec;
+	scene->intersect(ray, intersec);
+
+	if (intersec.primId == NullPrimitive) {
+		goto WriteRadiance;
+	}
+
+	Material material = scene->getTexturedMaterialAndSurface(intersec);
+
+	if (material.type == Material::Type::Light) {
+		goto WriteRadiance;
+	}
+
+	glm::vec3 throughput(1.f);
+	intersec.wo = -ray.direction;
+
+	for (int depth = 1; depth <= maxDepth; depth++) {
+		bool deltaBSDF = (material.type == Material::Type::Dielectric);
+
+		if (material.type != Material::Type::Dielectric && glm::dot(intersec.norm, intersec.wo) < 0.f) {
+			intersec.norm = -intersec.norm;
+		}
+
+		if (!deltaBSDF && depth > 1) {
+			glm::vec3 radiance;
+			glm::vec3 wi;
+			float lightPdf = scene->sampleDirectLight(intersec.pos, sample4D(rng), radiance, wi);
+
+			if (lightPdf > 0.f) {
+				float BSDFPdf = material.pdf(intersec.norm, intersec.wo, wi);
+				indirect += throughput * material.BSDF(intersec.norm, intersec.wo, wi) *
+					radiance * Math::satDot(intersec.norm, wi) / lightPdf * Math::powerHeuristic(lightPdf, BSDFPdf);
+			}
+		}
+
+		BSDFSample sample;
+		material.sample(intersec.norm, intersec.wo, sample3D(rng), sample);
+
+		if (sample.type == BSDFSampleType::Invalid) {
+			break;
+		}
+		else if (sample.pdf < 1e-8f) {
+			break;
+		}
+
+		bool deltaSample = (sample.type & BSDFSampleType::Specular);
+		throughput *= sample.bsdf / sample.pdf *
+			(deltaSample ? 1.f : Math::absDot(intersec.norm, sample.dir));
+
+		ray = makeOffsetedRay(intersec.pos, sample.dir);
+
+		glm::vec3 curPos = intersec.pos;
+		scene->intersect(ray, intersec);
+		intersec.wo = -ray.direction;
+
+		if (intersec.primId == NullPrimitive) {
+			if (scene->envMap != nullptr) {
+				glm::vec3 radiance = scene->envMap->linearSample(Math::toPlane(ray.direction))
+					* throughput;
+
+				float weight = deltaSample ? 1.f :
+					Math::powerHeuristic(sample.pdf, scene->environmentMapPdf(ray.direction));
+				indirect += radiance * weight;
+			}
+			break;
+		}
+		material = scene->getTexturedMaterialAndSurface(intersec);
+
+		if (material.type == Material::Type::Light) {
+#if SCENE_LIGHT_SINGLE_SIDED
+			if (glm::dot(intersec.norm, ray.direction) < 0.f) {
+				break;
+			}
+#endif
+			glm::vec3 radiance = material.baseColor;
+
+			float weight = deltaSample ? 1.f : Math::powerHeuristic(
+				sample.pdf,
+				Math::pdfAreaToSolidAngle(Math::luminance(radiance) * scene->sumLightPowerInv *
+					scene->getPrimitiveArea(intersec.primId), curPos, intersec.pos, intersec.norm)
+			);
+			indirect += radiance * throughput * weight;
+			break;
+		}
+	}
+WriteRadiance:
+	if (Math::hasNanOrInf(indirect)) {
+		indirect = glm::vec3(0.f);
+	}
+	indirectIllum[index] = (indirectIllum[index] * float(iter) + indirect) / float(iter + 1);
+}
+
 void pathTrace(glm::vec3* devDirectIllum, glm::vec3* devIndirectIllum, int iter) {
 	const Camera& cam = State::scene->camera;
 
@@ -362,6 +466,27 @@ void pathTraceDirect(glm::vec3* devDirectIllum, int iter) {
 	dim3 singlePTBlockSize(BlockSizeSinglePTX, BlockSizeSinglePTY);
 
 	PTDirectKernel<<<singlePTBlockNum, singlePTBlockSize>>>(State::looper, iter, State::scene->devScene, cam, devDirectIllum);
+
+	checkCUDAError("pathTrace");
+#if SAMPLER_USE_SOBOL
+	State::looper = (State::looper + 1) % SobolSampleNum;
+#else
+	State::looper++;
+#endif
+}
+
+void pathTraceIndirect(glm::vec3* devIndirectIllum, int iter) {
+	const Camera& cam = State::scene->camera;
+
+	const int BlockSizeSinglePTX = 8;
+	const int BlockSizeSinglePTY = 8;
+	int blockNumSinglePTX = ceilDiv(cam.resolution.x, BlockSizeSinglePTX);
+	int blockNumSinglePTY = ceilDiv(cam.resolution.y, BlockSizeSinglePTY);
+
+	dim3 singlePTBlockNum(blockNumSinglePTX, blockNumSinglePTY);
+	dim3 singlePTBlockSize(BlockSizeSinglePTX, BlockSizeSinglePTY);
+
+	PTIndirectKernel<<<singlePTBlockNum, singlePTBlockSize>>>(State::looper, iter, Settings::traceDepth, State::scene->devScene, cam, devIndirectIllum);
 
 	checkCUDAError("pathTrace");
 #if SAMPLER_USE_SOBOL

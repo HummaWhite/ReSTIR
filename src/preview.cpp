@@ -228,11 +228,13 @@ void RenderImGui() {
 
 		if (ImGui::Checkbox("ReSTIR", &Settings::useReservoir)) {
 			State::camChanged = true;
+			ReSTIRReset();
 		}
 
 		const char* ReuseState[] = { "None", "Temporal", "Spatial", "Spatiotemporal" };
 		if (ImGui::Combo("Reuse State", &Settings::reservoirReuse, ReuseState, IM_ARRAYSIZE(ReuseState))) {
 			State::camChanged = true;
+			//ReSTIRReset();
 		}
 
 		if (ImGui::Checkbox("Accumulate", &Settings::accumulate)) {
