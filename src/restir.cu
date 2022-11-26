@@ -377,6 +377,8 @@ WriteSample:
 	if (!indirectSample.invalid()) {
 		sampleWeight = IndirectReservoir::toScalar(pHatIndirect(indirectSample, primMaterial, primWo) / primSamplePdf);
 		if (isnan(sampleWeight) || sampleWeight < 0.f) {
+			// !!!!!!  CRITICAL  !!!!!!
+			// If the sample candidate is invalid, you should SET WEIGHT TO ZERO instead of clearing the reservoir
 			sampleWeight = 0.f;
 		}
 	}
