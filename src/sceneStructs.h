@@ -42,9 +42,7 @@ struct Camera {
 
     __device__ glm::ivec2 getRasterCoord(glm::vec3 pos) {
         glm::vec2 ndc = getRasterUV(pos);
-        int ix = glm::clamp(int((resolution.x - 1) * ndc.x + .5f), 0, resolution.x - 1);
-        int iy = glm::clamp(int((resolution.y - 1) * ndc.y + .5f), 0, resolution.y - 1);
-        return { ix, iy };
+        return { glm::vec2(resolution) * ndc };
     }
 
     __device__ glm::vec3 getPosition(int x, int y, float dist) {

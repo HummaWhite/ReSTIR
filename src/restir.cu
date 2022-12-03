@@ -405,14 +405,7 @@ WriteSample:
 		indirect = reservoir.sample.Lo / IndirectReservoir::toScalar(reservoir.sample.Lo) * reservoir.weight / static_cast<float>(reservoir.numSamples);
 		indirect *= primMaterial.BSDF(sample.nv, primWo, primWi) * (primSampleDelta ? 1.f : Math::satDot(sample.nv, primWi));
 		
-	}
-	
-	/*
-	glm::vec3 primWi = glm::normalize(sample.xs - sample.xv);
-	indirect = sample.Lo * primMaterial.BSDF(sample.nv, primWo, primWi) *
-		(primSampleDelta ? 1.f : Math::absDot(sample.nv, primWi)) / primSamplePdf;
-		*/
-		
+	}	
 
 	if (Math::hasNanOrInf(indirect)) {
 		indirect = glm::vec3(0.f);
